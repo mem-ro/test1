@@ -237,6 +237,79 @@ async function adoptRemote(remote) {
   }
 }
 
+/* ── time that cannot be wound on ──────────────────────────── */
+/* A date lock is only worth something if the date is real. The device clock is
+   the one thing its owner can change in ten seconds, so it is never what opens
+   an entry: opening needs a moment we have seen from a server — the sync
+   endpoint if there is one, otherwise the Date header the site itself serves —
+   advanced by a monotonic timer that no setting can touch. */
+
+const clock = { proven: 0, mono: 0, source: null, skew: 0, checked: 0 };
+
+async function checkTime() {
+  let ms = null, source = null;
+
+  if (sync.url) {
+    try {
+      const res = await fetch(sync.url.replace(/\/+$/, '') + '/time', { cache: 'no-store' });
+      const data = await res.json();
+      if (data && data.now) { ms = Number(data.now); source = new URL(sync.url).host; }
+    } catch { /* try the site instead */ }
+  }
+
+  if (!ms) {
+    try {
+      const res = await fetch(location.href.split('#')[0] + '?t=' + Date.now(),
+        { method: 'HEAD', cache: 'no-store' });
+      const header = res.headers.get('date');
+      const parsed = header ? Date.parse(header) : NaN;
+      if (parsed) { ms = parsed; source = location.host || 'this site'; }
+    } catch { /* offline */ }
+  }
+
+  clock.checked = Date.now();
+  if (!ms) return false;
+
+  clock.proven = Math.max(clock.proven, ms);
+  clock.mono = performance.now();
+  clock.source = source;
+  clock.skew = Date.now() - ms;
+  if (state.payload) {
+    state.payload.proven = Math.max(state.payload.proven || 0, clock.proven);
+  }
+  return true;
+}
+
+/* The latest moment we can actually show has passed, or null if we have never
+   managed to ask anyone. */
+function provenNow() {
+  const stored = (state.payload && state.payload.proven) || 0;
+  if (clock.proven) return clock.proven + (performance.now() - clock.mono);
+  return stored || null;
+}
+
+const timeVerified = () => provenNow() !== null;
+
+/* Opened from a folder rather than a site, there is nobody to ask, and a copy
+   on your own disk was never going to enforce anything anyway. It falls back
+   to the device clock there and says so. */
+const offlineCopy = () => location.protocol === 'file:';
+
+/* Has this entry's moment arrived, provably? */
+function ripe(e) {
+  if (!e.unlockAt) return true;
+  const p = provenNow();
+  if (p === null) return offlineCopy() && now() >= e.unlockAt;
+  return p >= e.unlockAt;
+}
+
+/* The device thinks it is time and we cannot confirm that. */
+function unconfirmed(e) {
+  return !!e.unlockAt && !ripe(e) && now() >= e.unlockAt;
+}
+
+const clockAhead = () => clock.proven && clock.skew > 5 * 60000;
+
 /* ── state ─────────────────────────────────────────────────── */
 
 const state = { key: null, vault: null, payload: null, view: null, entryId: null };
@@ -442,8 +515,11 @@ const stamp = ms => new Date(ms).toLocaleString([], {
   year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit'
 });
 
+/* The picker only holds whole minutes, and truncating would quietly make a
+   short lock land in the past, so it rounds up. */
 function localInput(ms) {
-  const d = new Date(ms - new Date().getTimezoneOffset() * 60000);
+  const up = Math.ceil(ms / 60000) * 60000;
+  const d = new Date(up - new Date().getTimezoneOffset() * 60000);
   return d.toISOString().slice(0, 16);
 }
 
@@ -476,7 +552,8 @@ const codeFor = e => e.opened ? e.secret : null;   // a locked code is not dicta
 
 function statusOf(e) {
   if (e.opened) return { label: 'Open', open: true };
-  if (e.unlockAt && e.unlockAt > now()) return { label: 'Locked', open: false };
+  if (unconfirmed(e)) return { label: 'Unconfirmed', open: false };
+  if (!ripe(e)) return { label: 'Locked', open: false };
   if (e.puzzle) return { label: 'Puzzle', open: false };
   return { label: 'Ready', open: true };
 }
@@ -508,8 +585,9 @@ function renderList() {
     const st = statusOf(e);
     const bits = [];
     if (e.unlockAt) {
-      bits.push(e.unlockAt > now()
-        ? `opens ${stamp(e.unlockAt)} · ${countdown(e.unlockAt - now())}`
+      const p = provenNow();
+      bits.push(unconfirmed(e) ? `the time cannot be confirmed`
+        : !ripe(e) ? `opens ${stamp(e.unlockAt)} · ${countdown(e.unlockAt - (p === null ? now() : p))}`
         : `date passed ${stamp(e.unlockAt)}`);
     }
     if (e.puzzle && !e.opened) bits.push(e.puzzle.rounds
@@ -520,7 +598,7 @@ function renderList() {
     return `<li><button class="entry" type="button" data-id="${esc(e.id)}">
       <span>
         <span class="entry-name">${esc(e.label)}</span>
-        <span class="entry-meta" data-clock="${e.unlockAt && !e.opened ? e.unlockAt : ''}">${esc(bits.join('  ·  '))}</span>
+        <span class="entry-meta" data-clock="${e.unlockAt && !e.opened && !unconfirmed(e) ? e.unlockAt : ''}">${esc(bits.join('  ·  '))}</span>
       </span>
       <span class="entry-state ${st.open ? 'open' : ''}">${st.label}</span>
     </button></li>`;
@@ -537,18 +615,29 @@ function renderEntry(id) {
   $('#entry-title').textContent = e.label;
 
   const parts = [];
-  const timeLeft = e.unlockAt ? e.unlockAt - now() : 0;
+  const proven = provenNow();
+  const timeLeft = e.unlockAt ? e.unlockAt - (proven === null ? now() : proven) : 0;
 
-  if (e.opened) {
+  if (!e.opened && unconfirmed(e)) {
+    parts.push(`<p class="gauge">—</p>
+      <p class="gauge-label">waiting on the real time</p>
+      <p class="lede">This device says the date has passed. Keepsafe could not check that with a server, and a device clock is the easiest thing in the world to wind forward — so it stays shut until the time can be confirmed.</p>
+      <div class="row"><button class="btn btn-solid" type="button" data-recheck-time>Check the time now</button></div>
+      <p class="hint">Connect to the internet and press it. ${clock.checked ? `Last tried ${esc(stamp(clock.checked))}.` : ''}</p>`);
+  } else if (e.opened) {
     parts.push(`<div class="reveal">${esc(e.secret)}</div>
       <div class="row">
         <button class="btn" type="button" data-copy>Copy</button>
         <button class="btn btn-danger" type="button" data-relock>Lock it again</button>
       </div>`);
-  } else if (timeLeft > 0) {
+  } else if (!ripe(e)) {
     parts.push(`<p class="gauge" data-clock="${e.unlockAt}">${countdown(timeLeft)}</p>
-      <p class="gauge-label">until ${esc(stamp(e.unlockAt))}</p>`);
+      <p class="gauge-label">until ${esc(stamp(e.unlockAt))}${clock.source ? ` · time from ${esc(clock.source)}` : ''}</p>`);
+    if (clockAhead()) parts.push(`<p class="error">This device's clock is ${esc(coarse(clock.skew))} ahead of the real time. The countdown ignores it.</p>`);
     if (clockSuspect()) parts.push(`<p class="error">This device's clock is behind the last time Keepsafe saw. The countdown is running on the later of the two.</p>`);
+    if (provenNow() === null) parts.push(`<p class="hint">${offlineCopy()
+      ? 'Opened from a folder, so there is no server to check the time with: this countdown is the device\'s own. The hosted site is the copy that can tell.'
+      : 'The time has not been checked with a server yet — this countdown is the device\'s own, and the entry will not open on it alone.'}</p>`);
     if (e.puzzle) parts.push(`<p class="hint">About ${e.puzzle.minutes || 20} minutes of counting is waiting after the date passes.</p>`);
     parts.push(`<div class="block"><h3>Change your mind the hard way</h3>
       <div class="row">
@@ -581,6 +670,7 @@ function renderEntry(id) {
       <div class="row"><button class="btn" type="button" data-copy>Copy</button></div>`);
     e.opened = true; e.openedAt = now(); persist(true);
   }
+
 
   if (codeFor(e)) {
     parts.push(`<div class="block"><h3>Type it into a device</h3>
@@ -872,7 +962,7 @@ async function downloadHtml() {
   const marker = 'var EMBEDDED = null; // __KEEPSAFE_EMBED__';
   if (!src.includes(marker)) { toast('Offline template is out of date.'); return downloadJson(); }
   await markBackedUp();
-  const json = JSON.stringify(state.vault).replace(/</g, '\\u003c');
+  const json = JSON.stringify({ vault: state.vault, sync: sync.url || null }).replace(/</g, '\\u003c');
   download(`keepsafe-${fileStamp()}.html`, src.replace(marker, 'var EMBEDDED = ' + json + ';'), 'text/html');
   toast('Offline unlocker saved.');
 }
@@ -991,6 +1081,7 @@ function tick() {
     else el.textContent = el.textContent.replace(/(?:\d+d )?\d\d:\d\d:\d\d/, text);
   }
   if (Date.now() - lastPersist > 60000) persist(false);
+  if (Date.now() - clock.checked > 15 * 60000) checkTime();
 }
 
 async function openSession(key, vault, payload, fresh, creds) {
@@ -1011,6 +1102,7 @@ async function openSession(key, vault, payload, fresh, creds) {
   nudgeIdle();
   if (fresh) toast('Set. Lock a code away, then download a backup.');
   if (sync.url && sync.id) settleWithRemote();
+  checkTime().then(got => { if (got) { persist(false); renderList(); } });
 }
 
 /* On opening: take whatever is newer, here or there. */
@@ -1265,6 +1357,14 @@ $('#entry-body').addEventListener('click', async ev => {
   }
 
   if (t.closest('[data-guide]')) startGuide(codeFor(e), e.id, false);
+
+  if (t.closest('[data-recheck-time]')) {
+    toast('Asking for the time…');
+    const got = await checkTime();
+    if (got) await persist(false);
+    renderEntry(e.id);
+    if (!got) toast('Could not reach anything to ask.');
+  }
 
   const ext = t.closest('[data-extend]');
   if (ext) {

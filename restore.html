@@ -77,11 +77,38 @@ var EMBEDDED = null; // __KEEPSAFE_EMBED__
 'use strict';
 var $ = function (s) { return document.querySelector(s); };
 var te = new TextEncoder(), td = new TextDecoder();
-var vault = EMBEDDED, payload = null, seen = 0, solved = {}, runs = {};
+var bundle = EMBEDDED && EMBEDDED.vault ? EMBEDDED : { vault: EMBEDDED, sync: null };
+var vault = bundle.vault, payload = null, seen = 0, solved = {}, runs = {};
+var proven = 0, provenMono = 0, timeSource = null;
 
 function unb64(str){var b=atob(str),o=new Uint8Array(b.length);for(var i=0;i<b.length;i++)o[i]=b.charCodeAt(i);return o;}
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function now(){return Math.max(Date.now(), seen);}
+
+/* This file can be opened with the clock set to next year, so it asks a server
+   for the time when it can, and says plainly when it could not. */
+function provenNow(){
+  if (proven) return proven + (performance.now() - provenMono);
+  return payload && payload.proven ? payload.proven : null;
+}
+function ripe(e){
+  if (!e.unlockAt) return true;
+  var p = provenNow();
+  return p !== null && p >= e.unlockAt;
+}
+function checkTime(){
+  var url = bundle.sync;
+  if (!url) return Promise.resolve(false);
+  return fetch(url.replace(/\/+$/, '') + '/time', { cache: 'no-store' })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (!d || !d.now) return false;
+      proven = Number(d.now); provenMono = performance.now();
+      timeSource = new URL(url).host;
+      return true;
+    })
+    .catch(function(){ return false; });
+}
 
 function deriveKey(secret, salt, it) {
   return crypto.subtle.importKey('raw', te.encode(secret), 'PBKDF2', false, ['deriveKey'])
@@ -198,6 +225,7 @@ document.addEventListener('keydown',function(ev){
 /* ── gate ────────────────────────────────────────────────────── */
 
 function start() {
+  checkTime();
   if (vault) { $('#gate').hidden = false; $('#pw').focus();
     if (vault.savedAt) $('#lede').textContent = 'Offline unlocker. Vault saved ' + stamp(vault.savedAt) + '. Everything needed to open it is in this one file — no internet, no website.';
   } else { $('#pick').hidden = false; $('#lede').textContent = 'Offline unlocker. Load a Keepsafe vault file and open it with its password — no internet, no website.'; }
@@ -258,15 +286,20 @@ function renderEntry(i) {
   var e = payload.entries[i];
   $('#list').hidden = true;
   var el = $('#detail'); el.hidden = false;
-  var left = e.unlockAt ? e.unlockAt - now() : 0;
-  var code = solved[i] || (e.opened ? e.secret : (left <= 0 && !e.puzzle ? e.secret : null));
+  var p = provenNow();
+  var left = e.unlockAt ? e.unlockAt - (p === null ? now() : p) : 0;
+  /* With no server reachable this falls back to the device clock — the file has
+     to stay usable when everything else is gone — and says which it used. */
+  var open = ripe(e) || (p === null && left <= 0);
+  var code = solved[i] || (e.opened ? e.secret : (open && !e.puzzle ? e.secret : null));
   var html = '<h2>' + esc(e.label) + '</h2><section>';
 
   if (code) {
     html += '<h3>The code</h3><p class="code">' + esc(code) + '</p>';
   } else if (left > 0) {
     html += '<h3>Still locked</h3><p class="gauge" data-at="' + e.unlockAt + '">' + countdown(left) + '</p>' +
-            '<p class="hint">until ' + esc(stamp(e.unlockAt)) + (e.puzzle ? ', then a ' + esc(e.puzzle.size) + ' counting puzzle' : '') + '</p>';
+            '<p class="hint">until ' + esc(stamp(e.unlockAt)) + (e.puzzle ? ', then the counting' : '') +
+            (timeSource ? ' · time from ' + esc(timeSource) : ' · unverified: read from this device\'s own clock') + '</p>';
   } else if (e.puzzle && e.puzzle.body) {
     if (!runs[i]) runs[i] = {body:e.puzzle.body, salt:e.puzzle.salt, links:e.puzzle.links,
                              iv:e.puzzle.iv, ct:e.puzzle.ct, done:e.puzzle.done||0, rounds:e.puzzle.rounds||1};

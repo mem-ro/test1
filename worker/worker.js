@@ -1,4 +1,6 @@
-/* Keepsafe sync — a Cloudflare Worker that holds one encrypted blob per vault.
+/* Keepsafe sync — a Cloudflare Worker that holds one encrypted blob per vault,
+ * and tells the client what time it is, which a phone's own clock cannot be
+ * trusted to do when the phone's owner wants a code back early.
  *
  * It never sees a password, a code, or anything readable: the client sends an
  * id and a token, both derived from the password by PBKDF2, and a vault that
@@ -30,6 +32,13 @@ async function sha256(text) {
 export default {
   async fetch(request, env) {
     if (request.method === 'OPTIONS') return new Response(null, { headers: CORS });
+
+    /* Anyone may ask the time — it is the one thing here worth knowing that is
+       not a secret, and a client with no vault yet still needs it. */
+    if (new URL(request.url).pathname.replace(/\/+$/, '').endsWith('/time')) {
+      return json({ now: Date.now() });
+    }
+
     if (request.method !== 'POST') return json({ error: 'post only' }, 405);
     if (!env.VAULTS) return json({ error: 'no KV namespace bound' }, 500);
 
@@ -49,7 +58,7 @@ export default {
     const path = new URL(request.url).pathname.replace(/\/+$/, '');
 
     if (path.endsWith('/pull')) {
-      return json({ vault: stored ? stored.vault : null, savedAt: stored ? stored.savedAt : null });
+      return json({ vault: stored ? stored.vault : null, savedAt: stored ? stored.savedAt : null, now: Date.now() });
     }
 
     if (path.endsWith('/push')) {
@@ -66,7 +75,7 @@ export default {
 
       const savedAt = Date.now();
       await env.VAULTS.put(slot, JSON.stringify({ tokenHash, vault, savedAt }));
-      return json({ ok: true, rev: incoming, savedAt });
+      return json({ ok: true, rev: incoming, savedAt, now: savedAt });
     }
 
     return json({ error: 'not found' }, 404);
