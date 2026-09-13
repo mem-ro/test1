@@ -26,6 +26,8 @@
 
 * { box-sizing: border-box; }
 
+[hidden] { display: none !important; }
+
 html { -webkit-text-size-adjust: 100%; }
 
 body {
@@ -201,3 +203,38 @@ textarea { resize: vertical; }
   .sheet { padding-top: 44px; }
   .facts dt { flex-basis: 96px; }
 }
+
+/* ── dictation ──────────────────────────────────────────── */
+
+.tt { font-family: var(--mono); font-size: 0.94em; }
+
+.steps { margin: 22px 0 26px; padding-left: 20px; font-size: 15px; color: var(--muted); }
+.steps li { margin-bottom: 10px; }
+.steps li::marker { font-family: var(--mono); font-size: 13px; }
+
+.dial {
+  font-family: var(--mono); font-weight: 400;
+  font-size: clamp(96px, 30vw, 180px); line-height: 1;
+  margin: 30px 0 0; letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.dial.del {
+  font-size: clamp(44px, 13vw, 84px); color: var(--accent);
+  letter-spacing: 0.02em; margin-top: 56px;
+}
+.dial-label {
+  font: 12px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--muted); margin: 14px 0 30px;
+}
+
+.track { height: 1px; background: var(--rule); margin: 34px 0 0; }
+.track span { display: block; height: 1px; background: var(--ink); transition: width .15s; }
+
+/* ── backup nag ─────────────────────────────────────────── */
+
+.nag {
+  display: flex; gap: 16px; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; border: 1px solid var(--accent); border-left-width: 3px;
+  padding: 14px 16px; margin-bottom: 26px; font-size: 14px;
+}
+.nag span { max-width: 46ch; }

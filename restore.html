@@ -10,6 +10,7 @@
 --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace}
 @media(prefers-color-scheme:dark){:root{--paper:#131312;--ink:#e9e6df;--muted:#918d84;--rule:#302f2c;--accent:#e0705a;--field:#1b1b19}}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 var(--sans);padding:0 20px 80px}
 main{max-width:640px;margin:0 auto;padding-top:64px}
 h1{font-size:30px;font-weight:600;letter-spacing:-.015em;margin:0}
@@ -27,14 +28,22 @@ input:focus{outline:2px solid var(--ink);outline-offset:-1px}
 .row{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-top:18px}
 .err{color:var(--accent);font-size:14px;margin:14px 0 0}
 .hint{font-size:13px;color:var(--muted);margin:8px 0 0;max-width:60ch}
+.tt{font-family:var(--mono);font-size:.94em}
 ul{list-style:none;margin:34px 0 0;padding:0;border-top:1px solid var(--rule)}
 li{border-bottom:1px solid var(--rule);padding:16px 0;display:flex;gap:16px;justify-content:space-between;align-items:baseline}
+ol{margin:22px 0 26px;padding-left:20px;font-size:15px;color:var(--muted)}
+ol li{display:list-item;border:0;padding:0;margin-bottom:10px}
 .name{font-size:17px}
-.meta{font:12px/1.4 var(--mono);color:var(--muted);margin-top:5px}
+.meta{display:block;font:12px/1.4 var(--mono);color:var(--muted);margin-top:5px}
 .state{font:12px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;color:var(--muted)}
 pre{font:14px/1.85 var(--mono);background:var(--field);border:1px solid var(--rule);padding:16px;white-space:pre;overflow-x:auto;letter-spacing:.22em;user-select:none;margin:0 0 16px}
 .code{font-family:var(--mono);font-size:clamp(24px,7vw,34px);word-break:break-all;background:var(--field);border:1px solid var(--ink);padding:20px;margin:0}
 .gauge{font-family:var(--mono);font-size:clamp(28px,8vw,40px);margin:0;font-variant-numeric:tabular-nums}
+.dial{font-family:var(--mono);font-size:clamp(96px,30vw,180px);line-height:1;margin:30px 0 0;letter-spacing:-.04em;font-variant-numeric:tabular-nums}
+.dial.del{font-size:clamp(44px,13vw,84px);color:var(--accent);margin-top:56px}
+.dial-label{font:12px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:14px 0 30px}
+.track{height:1px;background:var(--rule);margin:34px 0 0}
+.track span{display:block;height:1px;background:var(--ink)}
 section{margin-top:34px;border-top:1px solid var(--rule);padding-top:22px}
 .back{background:none;border:0;font:inherit;font-size:14px;color:var(--muted);text-decoration:underline;text-underline-offset:4px;cursor:pointer;padding:0}
 </style>
@@ -47,7 +56,7 @@ section{margin-top:34px;border-top:1px solid var(--rule);padding-top:22px}
   <div id="pick" hidden>
     <label for="file">Vault file</label>
     <input id="file" type="file" accept="application/json,.json">
-    <p class="hint">Choose the <code>keepsafe-vault-….json</code> you downloaded.</p>
+    <p class="hint">Choose the <span class="tt">keepsafe-vault-….json</span> you downloaded.</p>
   </div>
 
   <form id="gate" hidden autocomplete="off">
@@ -68,7 +77,7 @@ var EMBEDDED = null; // __KEEPSAFE_EMBED__
 'use strict';
 var $ = function (s) { return document.querySelector(s); };
 var te = new TextEncoder(), td = new TextDecoder();
-var vault = EMBEDDED, payload = null, seen = 0, timer = null;
+var vault = EMBEDDED, payload = null, seen = 0, solved = {};
 
 function unb64(str){var b=atob(str),o=new Uint8Array(b.length);for(var i=0;i<b.length;i++)o[i]=b.charCodeAt(i);return o;}
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
@@ -94,9 +103,104 @@ function countdown(ms){
 }
 function stamp(ms){return new Date(ms).toLocaleString([], {year:'numeric',month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
 
+/* ── dictation: one digit at a time, decoys mixed in ─────────── */
+
+function replay(steps){var b=[];steps.forEach(function(s){s.act==='del'?b.pop():b.push(s.ch);});return b.join('');}
+function overfills(steps,len){var n=0;for(var i=0;i<steps.length;i++){n+=steps[i].act==='del'?-1:1;if(n>=len&&i<steps.length-1)return true;}return false;}
+
+function draft(code){
+  var digits=code.split(''), L=digits.length, numeric=/^\d+$/.test(code);
+  var pool = numeric ? '0123456789' : 'abcdefghijklmnopqrstuvwxyz0123456789';
+  var wrongFor=function(right){var c;do{c=pool[Math.floor(Math.random()*pool.length)];}while(c===right);return c;};
+  var steps=[],buf=[],noise=L+1,guard=0;
+  var onTrack=function(){return buf.every(function(c,i){return c===digits[i];});};
+  while(guard++<400){
+    if(!onTrack()){steps.push({act:'del'});buf.pop();continue;}
+    if(buf.length===L-1&&noise<=0){steps.push({act:'type',ch:digits[L-1]});buf.push(digits[L-1]);break;}
+    var room=buf.length<L-1;
+    var beNoisy=noise>0&&(!room||Math.random()<0.5);
+    if(beNoisy&&room&&(buf.length===0||Math.random()<0.6)){
+      var w=wrongFor(digits[buf.length]);steps.push({act:'type',ch:w});buf.push(w);noise--;
+    } else if(beNoisy&&buf.length>0){
+      steps.push({act:'del'});buf.pop();noise--;
+    } else {
+      steps.push({act:'type',ch:digits[buf.length]});buf.push(digits[buf.length]);
+    }
+  }
+  return steps;
+}
+
+function dictation(code){
+  if(code.length<2) return code.split('').map(function(ch){return {act:'type',ch:ch};});
+  for(var i=0;i<25;i++){var s=draft(code);if(replay(s)===code&&!overfills(s,code.length))return s;}
+  return code.split('').map(function(ch){return {act:'type',ch:ch};});
+}
+
+var guide = {code:null,back:null,pass:1,passes:2,steps:[],i:0,stage:'intro'};
+
+function startGuide(code, back){
+  guide.code=code; guide.back=back; guide.pass=1; guide.i=0; guide.stage='intro';
+  guide.steps=dictation(code);
+  renderGuide();
+}
+
+function renderGuide(){
+  $('#list').hidden = true;
+  var el = $('#detail'); el.hidden = false;
+  var html;
+  if (guide.stage==='intro') {
+    html='<h2>Type it into a device</h2><section><ol>'+
+      '<li>On the phone: <span class="tt">Settings → Screen Time</span>, and stop at the keypad.</li>'+
+      '<li>One digit at a time. Type it, press Next, forget it.</li>'+
+      '<li>Some digits are wrong on purpose and you will be told to delete — deletes take away right digits too.</li>'+
+      '<li>iPhone asks twice; the second pass looks nothing like the first.</li></ol>'+
+      '<div class="row"><button class="btn solid" id="go">I am at the keypad</button>'+
+      '<button class="back" id="stop">Not now</button></div></section>';
+  } else if (guide.stage==='between') {
+    html='<h2>Once more</h2><section><p class="hint">The phone should be asking for it again to confirm. Get to that keypad — the digits come in a different order this time.</p>'+
+      '<div class="row"><button class="btn solid" id="go">Ready</button><button class="back" id="stop">Stop</button></div></section>';
+  } else if (guide.stage==='done') {
+    html='<h2>Done</h2><section><p class="hint">That is the code typed in, without you ever seeing it whole. If the phone rejected it, run it again.</p>'+
+      '<div class="row"><button class="btn solid" id="stop">Finished</button><button class="btn" id="again">Run it again</button></div></section>';
+  } else {
+    var st=guide.steps[guide.i], last=guide.i===guide.steps.length-1;
+    html='<h2>Pass '+guide.pass+' of '+guide.passes+'</h2><section>'+
+      '<p class="dial'+(st.act==='del'?' del':'')+'">'+(st.act==='del'?'⌫ delete':esc(st.ch))+'</p>'+
+      '<p class="dial-label">'+(st.act==='del'?'Take the last digit back off':'Type this on the phone')+'</p>'+
+      '<div class="row"><button class="btn solid" id="next">'+(last?'Done with this pass':'Next')+'</button>'+
+      '<span class="hint" style="margin:0">or press <span class="tt">space</span></span></div>'+
+      '<div class="track"><span style="width:'+Math.round((guide.i+1)/guide.steps.length*100)+'%"></span></div>'+
+      '<div class="row"><button class="btn" id="restart">Start this pass over</button>'+
+      '<button class="back" id="stop">Stop</button></div>'+
+      '<p class="hint">Starting over means clearing every digit on the phone first.</p></section>';
+  }
+  el.innerHTML = html;
+  var on=function(id,fn){var b=$('#'+id); if(b) b.addEventListener('click',fn);};
+  on('go',function(){guide.stage='step';guide.i=0;renderGuide();});
+  on('next',guideNext);
+  on('restart',function(){guide.steps=dictation(guide.code);guide.i=0;renderGuide();});
+  on('again',function(){startGuide(guide.code,guide.back);});
+  on('stop',function(){guide.code=null;guide.back();});
+}
+
+function guideNext(){
+  if(guide.stage!=='step')return;
+  guide.i++;
+  if(guide.i<guide.steps.length) return renderGuide();
+  if(guide.pass<guide.passes){guide.pass++;guide.i=0;guide.steps=dictation(guide.code);guide.stage='between';return renderGuide();}
+  guide.stage='done'; renderGuide();
+}
+
+document.addEventListener('keydown',function(ev){
+  if(guide.code&&guide.stage==='step'&&(ev.key===' '||ev.key==='Enter')){ev.preventDefault();guideNext();}
+});
+
+/* ── gate ────────────────────────────────────────────────────── */
+
 function start() {
-  if (vault) { $('#gate').hidden = false; $('#pw').focus(); }
-  else { $('#pick').hidden = false; $('#lede').textContent = 'Offline unlocker. Load a Keepsafe vault file and open it with its password — no internet, no website.'; }
+  if (vault) { $('#gate').hidden = false; $('#pw').focus();
+    if (vault.savedAt) $('#lede').textContent = 'Offline unlocker. Vault saved ' + stamp(vault.savedAt) + '. Everything needed to open it is in this one file — no internet, no website.';
+  } else { $('#pick').hidden = false; $('#lede').textContent = 'Offline unlocker. Load a Keepsafe vault file and open it with its password — no internet, no website.'; }
 }
 
 $('#file').addEventListener('change', function (ev) {
@@ -120,7 +224,7 @@ $('#gate').addEventListener('submit', function (ev) {
       seen = payload.seen || 0;
       $('#gate').hidden = true; $('#pw').value = '';
       renderList();
-      timer = setInterval(tickClocks, 1000);
+      setInterval(tickClocks, 1000);
     })
     .catch(function () { $('#gate-err').hidden = false; })
     .then(function () { btn.disabled = false; btn.textContent = 'Open'; });
@@ -135,13 +239,14 @@ function renderList() {
     var meta = [];
     if (e.unlockAt) meta.push(left > 0 ? 'opens ' + stamp(e.unlockAt) : 'date passed');
     if (e.puzzle && !e.opened) meta.push(e.puzzle.size + ' puzzle');
+    if (e.guide && !e.opened) meta.push('can be dictated');
     return '<li><span><span class="name">' + esc(e.label) + '</span>' +
       '<span class="meta">' + esc(meta.join('  ·  ')) + '</span></span>' +
       '<span><button class="btn" data-i="' + i + '">View</button> ' +
       '<span class="state">' + state + '</span></span></li>';
   }).join('');
   el.innerHTML = '<h2>Locked away</h2><ul>' + (rows || '<li><span class="meta">Nothing in this vault.</span></li>') + '</ul>' +
-    '<p class="hint">This file is a snapshot. Solving a puzzle here shows the code but changes nothing — the website keeps its own copy.</p>';
+    '<p class="hint">This file is a snapshot. Solving a puzzle or running a walkthrough here changes nothing — the website keeps its own copy.</p>';
 }
 
 $('#list').addEventListener('click', function (ev) {
@@ -154,32 +259,44 @@ function renderEntry(i) {
   $('#list').hidden = true;
   var el = $('#detail'); el.hidden = false;
   var left = e.unlockAt ? e.unlockAt - now() : 0;
+  var code = solved[i] || (e.opened ? e.secret : (left <= 0 && !e.puzzle ? e.secret : null));
   var html = '<h2>' + esc(e.label) + '</h2><section>';
 
-  if (e.opened || (!e.puzzle && left <= 0)) {
-    html += '<h3>The code</h3><p class="code">' + esc(e.secret) + '</p>';
+  if (code) {
+    html += '<h3>The code</h3><p class="code">' + esc(code) + '</p>';
   } else if (left > 0) {
     html += '<h3>Still locked</h3><p class="gauge" data-at="' + e.unlockAt + '">' + countdown(left) + '</p>' +
             '<p class="hint">until ' + esc(stamp(e.unlockAt)) + (e.puzzle ? ', then a ' + esc(e.puzzle.size) + ' counting puzzle' : '') + '</p>';
-  } else {
+  } else if (e.puzzle && e.puzzle.body) {
     html += '<h3>Count the numbers</h3><pre>' + esc(e.puzzle.body) + '</pre>' +
       '<form id="ans"><input id="n" type="number" min="0" inputmode="numeric" required placeholder="how many">' +
       '<div class="row"><button class="btn solid" type="submit">Unlock</button></div></form>' +
       '<p class="hint" id="ans-note">A run of digits counts as one number. The count is the decryption key.</p>';
   }
 
+  var dictable = code || e.guide;
+  if (dictable) {
+    html += '</section><section><h3>Type it into a device</h3>' +
+      '<div class="row"><button class="btn solid" id="dictate">Dictate it to me</button></div>' +
+      '<p class="hint">One digit at a time, wrong digits mixed in, twice over for the confirmation screen.</p>';
+  }
+
   html += '</section><div class="row"><button class="back" type="button" id="back">← everything else</button></div>';
   el.innerHTML = html;
   $('#back').addEventListener('click', renderList);
+
+  var d = $('#dictate');
+  if (d) d.addEventListener('click', function () {
+    startGuide(code || e.guide, function () { renderEntry(i); });
+  });
+
   var f = $('#ans');
   if (f) f.addEventListener('submit', function (ev) {
     ev.preventDefault();
     var note = $('#ans-note'); note.textContent = 'Checking…';
     deriveKey($('#n').value.trim(), unb64(e.puzzle.salt), 600000)
       .then(function (k) { return openBlob(k, e.puzzle); })
-      .then(function (secret) {
-        el.querySelector('section').innerHTML = '<h3>The code</h3><p class="code">' + esc(secret) + '</p>';
-      })
+      .then(function (secret) { solved[i] = secret; renderEntry(i); })
       .catch(function () { note.textContent = 'Not the right count. Try again.'; });
   });
 }
@@ -189,7 +306,6 @@ function tickClocks() {
   if (!g) return;
   var left = Number(g.dataset.at) - now();
   g.textContent = countdown(left);
-  if (left <= 0) location.reload ? renderList() : null;
 }
 
 start();

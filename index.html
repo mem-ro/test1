@@ -80,6 +80,7 @@
       <h2>Locked away</h2>
       <button class="btn btn-solid" type="button" id="btn-new">Lock something</button>
     </div>
+    <div id="backup-nag" class="nag" hidden></div>
     <ul id="entry-list" class="entries"></ul>
     <p id="empty" class="empty" hidden>Nothing is locked yet.</p>
   </section>
@@ -99,8 +100,13 @@
 
       <div class="field">
         <label for="new-secret">The code</label>
-        <textarea id="new-secret" rows="2" required placeholder="4172" spellcheck="false"></textarea>
-        <p class="hint">Write it down here once. After you save, it is gone from the screen.</p>
+        <div class="presets" id="code-mode">
+          <button class="chip is-on" type="button" data-mode="mine">I have one</button>
+          <button class="chip" type="button" data-mode="4">Invent 4 digits</button>
+          <button class="chip" type="button" data-mode="6">Invent 6 digits</button>
+        </div>
+        <textarea id="new-secret" rows="2" placeholder="4172" spellcheck="false"></textarea>
+        <p class="hint" id="secret-hint">Write it down here once. After you save, it is gone from the screen.</p>
       </div>
 
       <fieldset class="field">
@@ -135,6 +141,15 @@
         </div>
       </fieldset>
 
+      <fieldset class="field">
+        <legend>Typing it into a device</legend>
+        <label class="check">
+          <input type="checkbox" id="cond-guided" checked>
+          <span>Let me dictate it into a device while it stays locked</span>
+        </label>
+        <p class="hint">Keepsafe reads the code out one digit at a time, with wrong digits mixed in and told to delete, so you can set it on a phone without ever seeing it whole. Leaving this on keeps a copy the walkthrough can read — the locks still hide the code from you, but they no longer hide it from someone digging through storage with your password.</p>
+      </fieldset>
+
       <p id="new-error" class="error" hidden></p>
       <div class="row">
         <button class="btn btn-solid" type="submit">Lock it</button>
@@ -149,6 +164,15 @@
       <button class="btn btn-quiet" type="button" data-cancel>Back</button>
     </div>
     <div id="entry-body"></div>
+  </section>
+
+  <!-- dictation walkthrough -->
+  <section id="panel-guide" class="panel" hidden>
+    <div class="panel-head">
+      <h2 id="guide-title">Type it into your phone</h2>
+      <button class="btn btn-quiet" type="button" id="guide-quit">Stop</button>
+    </div>
+    <div id="guide-body"></div>
   </section>
 
   <!-- backup -->
