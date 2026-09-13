@@ -1,0 +1,4 @@
+# Nothing here is for a search engine, and a published vault file is for
+# nobody at all. Crawlers that respect this will skip the site entirely.
+User-agent: *
+Disallow: /

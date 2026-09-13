@@ -1,0 +1,13 @@
+# Deliberately not committed.
+#
+# A GitHub Pages site is public even when the repository is private, so a
+# committed vault.json can be downloaded by anyone who finds the URL and
+# attacked offline, forever — and git history keeps it there after you delete
+# it. The offline .html backup does the same job with none of that exposure.
+#
+# If you do want the site copy (a long passphrase, or an auth gate in front of
+# the site — see the README), publish it deliberately:
+#
+#     git add -f vault.json
+#
+vault.json

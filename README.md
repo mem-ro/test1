@@ -24,6 +24,34 @@ unlocker* download needs to read `restore.html`, which browsers block over
 python3 -m http.server 8000
 ```
 
+## Putting it online
+
+Four static files, so anything that serves a folder will do. What follows is
+GitHub Pages, because the repository is already here.
+
+1. **Make the repository public.** Pages needs it on the free plan, and a
+   private repository does not buy privacy anyway: a published Pages site is
+   publicly reachable whatever the repository's visibility — only GitHub
+   Enterprise Cloud can restrict who sees it. Nothing secret lives in these
+   files, so publishing them costs nothing.
+2. **Settings → Pages → Source: Deploy from a branch**, branch `main`, folder
+   `/ (root)`. A minute later the site is at
+   `https://<you>.github.io/<repo>/`.
+3. **Open it on the phone and set up the vault there.** Browser storage is
+   per-origin, so the vault belongs to whichever URL you first used. Decide
+   where it lives before you lock a real code away.
+4. **Download the offline `.html` backup and mail it to yourself.** On a public
+   site this is the copy that matters — see below.
+
+`vault.json` is in `.gitignore` on purpose. A committed vault is downloadable
+by anyone who finds the URL and attackable offline forever, and git history
+keeps it there after you delete it. Publish it only if the site sits behind an
+auth gate (Cloudflare Pages plus Cloudflare Access does this for free), or if
+your password is four or more random words. `git add -f vault.json` when you
+mean it.
+
+`robots.txt` asks crawlers to skip the site. It is a courtesy, not a control.
+
 ## Locking something away
 
 **The password.** Choosing one creates the vault. It goes through PBKDF2‑SHA256
