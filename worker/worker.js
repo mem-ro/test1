@@ -1,0 +1,74 @@
+/* Keepsafe sync — a Cloudflare Worker that holds one encrypted blob per vault.
+ *
+ * It never sees a password, a code, or anything readable: the client sends an
+ * id and a token, both derived from the password by PBKDF2, and a vault that
+ * is already encrypted. The Worker stores ciphertext under an opaque id and
+ * hands it back to whoever proves they know the token.
+ *
+ * Deploy:  cd worker && npx wrangler kv namespace create VAULTS
+ *          (paste the id into wrangler.toml, then)  npx wrangler deploy
+ */
+
+const CORS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'POST, OPTIONS',
+  'access-control-allow-headers': 'content-type',
+  'access-control-max-age': '86400'
+};
+
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...CORS }
+  });
+
+async function sha256(text) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+export default {
+  async fetch(request, env) {
+    if (request.method === 'OPTIONS') return new Response(null, { headers: CORS });
+    if (request.method !== 'POST') return json({ error: 'post only' }, 405);
+    if (!env.VAULTS) return json({ error: 'no KV namespace bound' }, 500);
+
+    let body;
+    try { body = await request.json(); } catch { return json({ error: 'bad json' }, 400); }
+
+    const id = String(body.id || ''), token = String(body.token || '');
+    if (!/^[a-f0-9]{32,128}$/.test(id) || token.length < 32) return json({ error: 'bad credentials' }, 400);
+
+    const slot = 'vault:' + id;
+    const stored = await env.VAULTS.get(slot, 'json');
+    const tokenHash = await sha256(token);
+
+    /* The first writer claims the slot; after that the token has to match. */
+    if (stored && stored.tokenHash !== tokenHash) return json({ error: 'denied' }, 403);
+
+    const path = new URL(request.url).pathname.replace(/\/+$/, '');
+
+    if (path.endsWith('/pull')) {
+      return json({ vault: stored ? stored.vault : null, savedAt: stored ? stored.savedAt : null });
+    }
+
+    if (path.endsWith('/push')) {
+      const vault = body.vault;
+      if (!vault || vault.v !== 1 || !vault.data || !vault.kdf) return json({ error: 'not a vault' }, 400);
+      const size = JSON.stringify(vault).length;
+      if (size > 4_000_000) return json({ error: 'vault too large' }, 413);
+
+      const incoming = Number(vault.rev) || 0;
+      const held = stored ? Number(stored.vault.rev) || 0 : 0;
+      if (stored && incoming < held && !body.force) {
+        return json({ ok: false, reason: 'stale', vault: stored.vault, savedAt: stored.savedAt }, 409);
+      }
+
+      const savedAt = Date.now();
+      await env.VAULTS.put(slot, JSON.stringify({ tokenHash, vault, savedAt }));
+      return json({ ok: true, rev: incoming, savedAt });
+    }
+
+    return json({ error: 'not found' }, 404);
+  }
+};

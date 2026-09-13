@@ -240,7 +240,6 @@ function renderList() {
     if (e.unlockAt) meta.push(left > 0 ? 'opens ' + stamp(e.unlockAt) : 'date passed');
     if (e.puzzle && !e.opened) meta.push(e.puzzle.rounds
       ? ((e.puzzle.done || 0) + '/' + e.puzzle.rounds + ' blocks counted') : 'counting puzzle');
-    if (e.guide && !e.opened) meta.push('can be dictated');
     return '<li><span><span class="name">' + esc(e.label) + '</span>' +
       '<span class="meta">' + esc(meta.join('  ·  ')) + '</span></span>' +
       '<span><button class="btn" data-i="' + i + '">View</button> ' +
@@ -281,7 +280,7 @@ function renderEntry(i) {
       '<p class="hint" id="ans-note">Counting here does not save your place — this file is a snapshot.</p>';
   }
 
-  var dictable = code || e.guide;
+  var dictable = code;
   if (dictable) {
     html += '</section><section><h3>Type it into a device</h3>' +
       '<div class="row"><button class="btn solid" id="dictate">Dictate it to me</button></div>' +
@@ -294,7 +293,7 @@ function renderEntry(i) {
 
   var d = $('#dictate');
   if (d) d.addEventListener('click', function () {
-    startGuide(code || e.guide, function () { renderEntry(i); });
+    startGuide(code, function () { renderEntry(i); });
   });
 
   var f = $('#ans');

@@ -1,0 +1,9 @@
+name = "keepsafe-sync"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+# Create the namespace, then paste its id here:
+#   npx wrangler kv namespace create VAULTS
+[[kv_namespaces]]
+binding = "VAULTS"
+id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE"

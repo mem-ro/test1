@@ -10,58 +10,38 @@
 </head>
 <body>
 
-<!-- ── gate: create a password ───────────────────────────────── -->
-<main id="view-setup" class="sheet" hidden>
-  <header class="masthead">
-    <h1>Keepsafe</h1>
-    <p class="standfirst">Put a screen time code out of your own reach — until a date passes, until you count your way out, or both.</p>
-  </header>
-
-  <form id="form-setup" class="stack" autocomplete="off">
-    <div class="field">
-      <label for="setup-pw">Choose a password</label>
-      <input id="setup-pw" type="password" minlength="8" required autocomplete="new-password" spellcheck="false">
-      <p class="hint">Eight characters or more. It encrypts everything on this device. There is no reset.</p>
-    </div>
-    <div class="field">
-      <label for="setup-pw2">Type it again</label>
-      <input id="setup-pw2" type="password" required autocomplete="new-password" spellcheck="false">
-    </div>
-    <p id="setup-error" class="error" hidden></p>
-    <div class="row">
-      <button class="btn btn-solid" type="submit">Create vault</button>
-      <button class="btn btn-quiet" type="button" data-restore>Restore a backup</button>
-    </div>
-  </form>
-
-  <section class="note">
-    <h2>How it works</h2>
-    <ul>
-      <li>Everything stays in this browser. No account, no server, nothing sent anywhere.</li>
-      <li>The vault is encrypted with your password (PBKDF2 · 310,000 rounds → AES‑GCM 256).</li>
-      <li>A puzzle lock is real: the code is encrypted with the answer, so the count has to be done.</li>
-      <li>A date lock is a promise, not a cage — see the honesty note in the README.</li>
-    </ul>
-  </section>
-</main>
-
-<!-- ── gate: unlock ──────────────────────────────────────────── -->
+<!-- ── the gate ──────────────────────────────────────────────── -->
 <main id="view-unlock" class="sheet" hidden>
   <header class="masthead">
     <h1>Keepsafe</h1>
-    <p class="standfirst">Locked.</p>
+    <p class="standfirst" id="gate-lede">Locked.</p>
   </header>
+
   <form id="form-unlock" class="stack" autocomplete="off">
     <div class="field">
-      <label for="unlock-pw">Password</label>
+      <label for="unlock-pw" id="unlock-label">Password</label>
       <input id="unlock-pw" type="password" required autocomplete="current-password" spellcheck="false">
     </div>
+    <label class="check">
+      <input type="checkbox" id="stay-open" checked>
+      <span>Stay unlocked on this device</span>
+    </label>
     <p id="unlock-error" class="error" hidden></p>
     <div class="row">
       <button class="btn btn-solid" type="submit">Open</button>
       <button class="btn btn-quiet" type="button" data-restore>Restore a backup</button>
     </div>
   </form>
+
+  <section class="note" id="first-note" hidden>
+    <h2>How it works</h2>
+    <ul>
+      <li>One password, the one you type above. It encrypts everything on this device, it is never stored, and there is no reset.</li>
+      <li>Codes are locked away behind a date, a counting puzzle, or both.</li>
+      <li>A code can be typed into your phone one digit at a time, so you can set it without ever seeing it whole.</li>
+      <li>Nothing is sent anywhere. Keep the backup file — a browser can lose its storage.</li>
+    </ul>
+  </section>
 </main>
 
 <!-- ── the vault ─────────────────────────────────────────────── -->
@@ -125,7 +105,16 @@
             <button class="chip" type="button" data-mins="10080">1 week</button>
             <button class="chip" type="button" data-mins="43200">30 days</button>
           </div>
+          <p class="inline-field">or <input id="dur-n" type="number" inputmode="numeric" value="30">
+            <select id="dur-unit">
+              <option value="1">minutes</option>
+              <option value="60" selected>hours</option>
+              <option value="1440">days</option>
+              <option value="10080">weeks</option>
+              <option value="43200">months</option>
+            </select> from now</p>
           <input id="new-until" type="datetime-local">
+          <p class="hint">Or set the exact moment above — down to the minute.</p>
         </div>
 
         <label class="check">
@@ -144,14 +133,6 @@
         </div>
       </fieldset>
 
-      <fieldset class="field">
-        <legend>Typing it into a device</legend>
-        <label class="check">
-          <input type="checkbox" id="cond-guided" checked>
-          <span>Let me dictate it into a device while it stays locked</span>
-        </label>
-        <p class="hint">Keepsafe reads the code out one digit at a time, with wrong digits mixed in and told to delete, so you can set it on a phone without ever seeing it whole. Leaving this on keeps a copy the walkthrough can read — the locks still hide the code from you, but they no longer hide it from someone digging through storage with your password.</p>
-      </fieldset>
 
       <p id="new-error" class="error" hidden></p>
       <div class="row">
@@ -199,6 +180,14 @@
           <p class="hint">The encrypted data by itself, for restoring into this site later.</p>
         </div>
         <button class="btn" type="button" id="btn-dl-json">Download .json</button>
+      </div>
+
+      <div class="backup-row">
+        <div>
+          <h3>Saved off this device</h3>
+          <p class="hint" id="sync-status">Not set up.</p>
+        </div>
+        <button class="btn" type="button" id="btn-sync-now" hidden>Sync now</button>
       </div>
 
       <div class="backup-row">

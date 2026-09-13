@@ -255,3 +255,9 @@ textarea { resize: vertical; }
 .site-steps .steps { margin: 14px 0 0; font-size: 14px; }
 .site-steps .btn-quiet { font-size: 14px; padding: 0; }
 .warn { color: var(--accent); }
+
+.inline-field select {
+  font: 14px/1 var(--mono); color: var(--ink); background: var(--field);
+  border: 1px solid var(--rule); border-radius: 2px; padding: 7px 8px; margin: 0 4px;
+}
+.inline-field select:focus { outline: 2px solid var(--ink); outline-offset: -1px; }

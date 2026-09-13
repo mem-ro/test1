@@ -54,16 +54,28 @@ mean it.
 
 ## Locking something away
 
-**The password.** Choosing one creates the vault. It goes through PBKDF2‑SHA256
-(600,000 rounds) into an AES‑GCM‑256 key, and everything — labels, codes,
-puzzles, timestamps — is stored as one encrypted blob. The password itself is
-never stored, so there is no reset and no recovery.
+**The password.** One password, the one you type on the way in. There is no
+separate setup, no account, no second password: the first time you open the
+site it asks for it twice (a typo here is unrecoverable) and after that it is a
+single field. It goes through PBKDF2‑SHA256 at 600,000 rounds into an
+AES‑GCM‑256 key, and everything — labels, codes, puzzles, timestamps — is one
+encrypted blob. The password itself is never stored, so there is no reset.
+
+**Stay unlocked on this device** is on by default, and means what it says: the
+derived key is kept in IndexedDB as a non-extractable `CryptoKey`, so the
+browser can decrypt with it but can never hand the bytes back, and the site
+opens without asking again. Press **Lock** and that key is thrown away — on
+that device you are asked once more. Idle auto-locking applies only when you
+have turned staying-unlocked off.
 
 **The code.** Type in one you already have, or let Keepsafe invent four or six
 digits it never shows you. An invented code leaves the vault exactly once: one
 digit at a time, into your phone, through the walkthrough below.
 
-**A date.** The entry stays shut until the moment you picked. It can be pushed
+**A date.** Presets for the common cases, a number-and-unit box for anything
+else — minutes, hours, days, weeks, months — and an exact date-and-time picker
+underneath, down to the minute. The entry stays shut until the moment you
+picked. It can be pushed
 further out at any time; it can never be pulled in. Winding the device clock
 back does not help — the vault records the furthest point in time it has ever
 seen and counts down from the later of the two.
@@ -88,8 +100,10 @@ waits behind it.
 
 ## Typing it in without learning it
 
-The walkthrough runs straight after you save, and afterwards from the entry's
-**Dictate it to me** button. It shows one digit, filling the screen, and
+The walkthrough runs straight after you save — the one moment the code is in
+hand and not yet locked — and afterwards from the **Dictate it to me** button
+on any entry that is *open*. Never on a locked one: reading you the digits one
+at a time would let you write them down, and the lock would be worth nothing. It shows one digit, filling the screen, and
 nothing else. You type that digit into the phone, press Next, and it is gone.
 
 Three things make the sequence hard to keep hold of:
@@ -130,11 +144,6 @@ back.
   cannot be enforced by cryptography on a machine you control. Anyone who knows
   the vault password and is willing to poke at the stored JSON can read a
   date‑only entry early. Combine it with a puzzle if you want teeth.
-* **Guided entry keeps a readable copy.** Dictating a locked code means the app
-  can read it, so the copy sits in the vault under your password. The locks
-  still keep the code off your screen; they no longer keep it from someone
-  digging through storage with the password in hand. Turn the option off when
-  you create an entry if you would rather the puzzle be the only way through.
 * Nothing here defends against malware on the machine, or someone who knows
   your vault password.
 
@@ -158,6 +167,43 @@ A saved code should not be able to disappear. So:
   saves do not trip it; real edits do.
 * The vault auto‑locks after five quiet minutes — thirty, mid‑walkthrough, so
   it never locks while you are at the keypad.
+
+## Saving it off this device
+
+The two browser stores and a committed file all depend on you doing something.
+For the vault to be saved without you thinking about it, something has to be
+able to accept a write — which a static page cannot do. `worker/` holds a small
+Cloudflare Worker that can.
+
+It stores one encrypted blob per vault and knows nothing else. The client sends
+an id and a token, both derived from your password by PBKDF2, and a vault that
+is already encrypted; the Worker files the ciphertext under the opaque id and
+hands it back to whoever proves they know the token. It never sees a password,
+a code, or anything readable.
+
+```
+cd worker
+npx wrangler kv namespace create VAULTS     # paste the id into wrangler.toml
+npx wrangler deploy
+```
+
+Put the deployed URL in `config.json`:
+
+```json
+{ "sync": "https://keepsafe-sync.<you>.workers.dev" }
+```
+
+From then on every change is saved within a second or two, and **one password
+is all a new device needs**: type it on a fresh phone and the vault arrives.
+The Backup screen shows where it is saving and when it last managed to. If the
+endpoint is unreachable the app carries on from local storage and says so.
+
+Two devices editing while one is offline is resolved by revision number — the
+newer wins, and the older is told. For one person with a phone and a laptop
+that is the right trade; it is not a merge.
+
+Leaving `config.json` empty (the default) means the site saves nothing
+anywhere, and the copies below are all there is.
 
 ## Keeping it with the site
 
@@ -213,6 +259,8 @@ yourself or keep it in cloud storage.
 | `styles.css` | the whole look; light and dark |
 | `app.js` | crypto, vault, storage mirroring, puzzle chains, dictation, UI |
 | `restore.html` | the standalone offline unlocker template |
+| `config.json` | where the sync endpoint is named, if you deploy one |
+| `worker/` | the Cloudflare Worker that saves the vault off-device |
 | `vault.json` | optional: your encrypted vault, deployed with the site |
 
 No dependencies. Needs `crypto.subtle`, which browsers only expose on

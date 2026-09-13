@@ -1,0 +1,4 @@
+{
+  "_": "Paste the URL of your Keepsafe sync Worker here to have the vault saved off this device. Empty means the site saves nothing anywhere, which is the default.",
+  "sync": ""
+}

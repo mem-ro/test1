@@ -7,9 +7,11 @@
 'use strict';
 
 const STORE   = 'keepsafe.vault.v1';
-const IDB_DB  = 'keepsafe', IDB_STORE = 'vault', IDB_KEY = 'v1';
+const IDB_DB  = 'keepsafe', IDB_STORE = 'vault', IDB_KEY = 'v1', KEY_KEY = 'key';
 const KDF_IT  = 600000;   // vault password (OWASP's figure for PBKDF2-SHA256)
 const SEED    = 'vault.json';   // a copy of the vault deployed with the site
+const CONFIG  = 'config.json';  // where the sync endpoint, if any, is named
+const SYNC_IT = 200000;         // rounds behind the sync id and token
 const PZ_IT   = 600000;   // puzzle answer
 const IDLE_MS = 5 * 60 * 1000;
 const GUIDE_IDLE_MS = 30 * 60 * 1000;   // don't lock mid-walkthrough
@@ -97,6 +99,18 @@ async function idbGet() {
 /* The page cannot write to its own files — there is no server to write with —
    so the site copy is refreshed by committing a new vault.json. Read-only here,
    and adopted only when it is ahead of what this browser holds. */
+async function loadConfig() {
+  try {
+    const res = await fetch(CONFIG + '?t=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) return;
+    const cfg = await res.json();
+    if (cfg && typeof cfg.sync === 'string' && /^https?:\/\//.test(cfg.sync)) {
+      sync.url = cfg.sync;
+      sync.note = 'not contacted yet';
+    }
+  } catch { /* no config, no sync */ }
+}
+
 async function fetchSeed() {
   try {
     const res = await fetch(SEED + '?t=' + Date.now(), { cache: 'no-store' });
@@ -104,6 +118,27 @@ async function fetchSeed() {
     const v = await res.json();
     return (v && v.v === 1 && v.kdf && v.data) ? v : null;
   } catch { return null; }          // missing file, file://, offline — all fine
+}
+
+/* "Stay unlocked on this device" keeps the derived key itself in IndexedDB.
+   It is non-extractable — the browser will hand it back for decryption but not
+   as bytes — so the vault opens without the password while the ciphertext on
+   disk stays ciphertext. Pressing Lock throws it away. */
+async function idbKey(op, value) {
+  try {
+    const db = await openIdb();
+    const out = await new Promise((res, rej) => {
+      const tx = db.transaction(IDB_STORE, op === 'get' ? 'readonly' : 'readwrite');
+      const store = tx.objectStore(IDB_STORE);
+      const req = op === 'get' ? store.get(KEY_KEY)
+                : op === 'put' ? store.put(value, KEY_KEY)
+                : store.delete(KEY_KEY);
+      req.onsuccess = () => res(req.result || null);
+      req.onerror = () => rej(req.error);
+    });
+    db.close();
+    return out;
+  } catch { return null; }
 }
 
 function loadVault() {
@@ -119,10 +154,93 @@ function writeVault(vault) {
 
 const revOf = v => (v && v.rev) || 0;
 
+/* ── sync ──────────────────────────────────────────────────── */
+/* Optional. With a Worker deployed and named in config.json, the vault is
+   saved off this device after every change and pulled back on any other. The
+   endpoint is handed an id and a token derived from the password, and a blob
+   it cannot read: it can store the vault and hand it back, and nothing else. */
+
+const sync = { url: null, id: null, token: null, at: null, note: 'off' };
+let pushTimer = null;
+
+async function deriveBits(secret, info, length = 32) {
+  const base = await crypto.subtle.importKey('raw', te.encode(secret), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: te.encode(info), iterations: SYNC_IT, hash: 'SHA-256' }, base, length * 8);
+  return new Uint8Array(bits);
+}
+
+const hex = bytes => [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+
+async function syncCreds(password) {
+  return {
+    id: hex(await deriveBits(password, 'keepsafe-sync-id')),
+    token: b64(await deriveBits(password, 'keepsafe-sync-token'))
+  };
+}
+
+async function syncCall(path, body) {
+  const res = await fetch(sync.url.replace(/\/+$/, '') + path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id: sync.id, token: sync.token, ...body })
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
+async function syncPull() {
+  if (!sync.url || !sync.id) return null;
+  try {
+    const { ok, data } = await syncCall('/pull', {});
+    if (!ok) { sync.note = 'the endpoint refused this vault'; return null; }
+    sync.at = Date.now();
+    sync.note = data.vault ? 'saved' : 'nothing saved there yet';
+    return data.vault || null;
+  } catch { sync.note = 'unreachable'; return null; }
+}
+
+async function syncPush() {
+  if (!sync.url || !sync.id || !state.vault) return;
+  try {
+    const { ok, status, data } = await syncCall('/push', { vault: state.vault });
+    if (ok) { sync.at = Date.now(); sync.note = 'saved'; return; }
+    if (status === 409) {                       // another device is ahead
+      sync.note = 'another device has newer changes';
+      if (data.vault && revOf(data.vault) > revOf(state.vault)) adoptRemote(data.vault);
+      return;
+    }
+    sync.note = status === 403 ? 'the slot belongs to another password' : 'the endpoint refused the write';
+  } catch { sync.note = 'unreachable'; }
+}
+
+function queuePush() {
+  if (!sync.url || !sync.id) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(syncPush, 1200);
+}
+
+/* A vault pulled from the endpoint is the same vault, so the key in hand
+   should still open it. If it does not, the password behind it differs and
+   the only honest move is to ask for it. */
+async function adoptRemote(remote) {
+  writeVault(remote);
+  try {
+    const payload = JSON.parse(await open_(state.key, remote.data));
+    state.vault = remote; state.payload = payload;
+    if (!$('#panel-guide').hidden) return;
+    (state.entryId && !$('#panel-entry').hidden) ? renderEntry(state.entryId) : renderList();
+    toast('Picked up newer changes from the site.');
+  } catch {
+    toast('The saved vault was made with a different password.');
+    lock();
+  }
+}
+
 /* ── state ─────────────────────────────────────────────────── */
 
 const state = { key: null, vault: null, payload: null, view: null, entryId: null };
-let ticker = null, idleTimer = null, lastPersist = 0, seed = null;
+let ticker = null, idleTimer = null, lastPersist = 0, seed = null, staying = false;
 
 /* Clock guard: winding the device clock back must not open anything, so the
    vault remembers the furthest point in time it has ever seen. */
@@ -140,6 +258,7 @@ async function persist(changed) {
   state.vault.data = await seal(state.key, JSON.stringify(state.payload));
   writeVault(state.vault);
   lastPersist = Date.now();
+  if (changed) queuePush();
 }
 
 const backupStale = () => (state.payload.dataRev || 0) > (state.payload.backedUpRev || 0);
@@ -344,7 +463,7 @@ function toast(msg) {
 
 function show(view) {
   state.view = view;
-  for (const id of ['view-setup', 'view-unlock', 'view-app']) $('#' + id).hidden = (id !== view);
+  for (const id of ['view-unlock', 'view-app']) $('#' + id).hidden = (id !== view);
 }
 
 function panel(name) {
@@ -353,7 +472,7 @@ function panel(name) {
 
 /* ── list ──────────────────────────────────────────────────── */
 
-const codeFor = e => (e.opened ? e.secret : e.guide) || null;   // what the walkthrough may read
+const codeFor = e => e.opened ? e.secret : null;   // a locked code is not dictated either
 
 function statusOf(e) {
   if (e.opened) return { label: 'Open', open: true };
@@ -467,9 +586,9 @@ function renderEntry(id) {
     parts.push(`<div class="block"><h3>Type it into a device</h3>
       <div class="row"><button class="btn btn-solid" type="button" data-guide>Dictate it to me</button></div>
       <p class="hint">One digit at a time, wrong digits mixed in, twice over for the confirmation screen${e.dictated ? ` · last done ${esc(stamp(e.dictated))}` : ''}.</p></div>`);
-  } else if (!e.opened) {
+  } else {
     parts.push(`<div class="block"><h3>Type it into a device</h3>
-      <p class="hint">Not available for this one: guided entry was turned off, so nothing but the puzzle answer can read the code.</p></div>`);
+      <p class="hint">Not while it is locked. Dictating the digits one at a time would let you write them down, and the lock would be worth nothing. Open it first.</p></div>`);
   }
 
   parts.push(`<div class="block"><h3>Details</h3><dl class="facts">
@@ -672,7 +791,6 @@ async function newEntry(ev) {
   const secret = mode === 'mine' ? $('#new-secret').value.trim() : makeCode(Number(mode));
   const useTime = $('#cond-time').checked;
   const usePuzzle = $('#cond-puzzle').checked;
-  const guided = $('#cond-guided').checked;
 
   const fail = m => { err.textContent = m; err.hidden = false; };
   if (!label) return fail('Give it a name.');
@@ -690,7 +808,7 @@ async function newEntry(ev) {
   const entry = {
     id: b64(rand(9)).replace(/[^a-zA-Z0-9]/g, '').slice(0, 10) + Date.now().toString(36),
     label, createdAt: now(), unlockAt, opened: false, openedAt: null,
-    secret: null, guide: null, puzzle: null, madeUp: mode !== 'mine', dictated: null
+    secret: null, puzzle: null, madeUp: mode !== 'mine', dictated: null
   };
 
   if (usePuzzle) {
@@ -704,13 +822,11 @@ async function newEntry(ev) {
   } else {
     entry.secret = secret;                 // already behind the vault password
   }
-  if (guided) entry.guide = secret;        // the copy the walkthrough may read
 
   state.payload.entries.unshift(entry);
   await persist(true);
   $('#form-new').reset();
   setCodeMode('mine');
-  $('#cond-guided').checked = true;
   $('#puzzle-body').hidden = true;
   $('#time-body').hidden = false;
   startGuide(secret, entry.id, true);
@@ -779,6 +895,13 @@ function renderBackup() {
         : `Deployed copy saved ${when}. Up to date.`;
   }
 
+  const line = $('#sync-status');
+  const host = sync.url ? new URL(sync.url).host : null;
+  line.textContent = !sync.url
+    ? 'Not set up. Without it, this site saves nothing anywhere — the copies above are all there is.'
+    : `Saving to ${host} — ${sync.note}${sync.at ? ` · last contact ${stamp(sync.at)}` : ''}.`;
+  $('#btn-sync-now').hidden = !sync.url;
+
   warn.hidden = location.protocol === 'file:';
   warn.className = 'hint warn';
   warn.textContent = 'Anyone who can reach the site can download this file. It is encrypted, and a long password is what stands behind that — so if the site is public, make the password a long one.';
@@ -827,13 +950,16 @@ async function readRestore(ev) {
       older ? ' — which is OLDER than what is here' : ''}? Anything saved since the backup is lost.`)) return;
   }
   writeVault(data);
+  await idbKey('del');
+  pendingNew = null;
   await boot();
-  toast('Backup restored. Unlock it with the password it was saved under.');
+  toast('Backup restored. Open it with the password it was saved under.');
 }
 
 /* ── session ───────────────────────────────────────────────── */
 
 function lock() {
+  idbKey('del');                      // Lock means lock, even here
   state.key = null; state.payload = null; state.entryId = null;
   guide.code = null; guide.steps = [];
   clearInterval(ticker); ticker = null;
@@ -844,7 +970,7 @@ function lock() {
 }
 
 function nudgeIdle() {
-  if (!state.key) return;
+  if (!state.key || staying) return;
   clearTimeout(idleTimer);
   idleTimer = setTimeout(() => { lock(); toast('Locked after five quiet minutes.'); },
     guideActive() ? GUIDE_IDLE_MS : IDLE_MS);
@@ -867,35 +993,45 @@ function tick() {
   if (Date.now() - lastPersist > 60000) persist(false);
 }
 
-async function enter(password, isNew) {
-  const vault = loadVault();
-  const key = await deriveKey(password, unb64(vault.kdf.salt), vault.kdf.iterations);
-  const payload = JSON.parse(await open_(key, vault.data));   // throws on a wrong password
+async function openSession(key, vault, payload, fresh, creds) {
   state.key = key; state.vault = vault; state.payload = payload;
+  if (creds) { sync.id = creds.id; sync.token = creds.token; payload.sync = creds; }
+  else if (payload.sync) { sync.id = payload.sync.id; sync.token = payload.sync.token; }
   if (!Array.isArray(payload.entries)) payload.entries = [];
   if (payload.dataRev === undefined) payload.dataRev = payload.entries.length ? 1 : 0;
   await persist(false);
+
+  staying = $('#stay-open').checked;
+  if (staying) await idbKey('put', key); else await idbKey('del');
+
   show('view-app');
   renderList();
   clearInterval(ticker);
   ticker = setInterval(tick, 1000);
   nudgeIdle();
-  if (isNew) toast('Vault created. Lock something away, then download a backup.');
+  if (fresh) toast('Set. Lock a code away, then download a backup.');
+  if (sync.url && sync.id) settleWithRemote();
 }
 
-async function createVault(ev) {
-  ev.preventDefault();
-  const err = $('#setup-error');
-  err.hidden = true;
-  const pw = $('#setup-pw').value, pw2 = $('#setup-pw2').value;
-  if (pw.length < 8) { err.textContent = 'Eight characters or more.'; err.hidden = false; return; }
-  if (pw !== pw2) { err.textContent = 'The two do not match.'; err.hidden = false; return; }
+/* On opening: take whatever is newer, here or there. */
+async function settleWithRemote() {
+  const remote = await syncPull();
+  if (remote && revOf(remote) > revOf(state.vault)) return adoptRemote(remote);
+  if (!remote || revOf(state.vault) > revOf(remote)) return syncPush();
+}
 
-  const btn = $('#form-setup button[type=submit]');
-  btn.disabled = true; btn.textContent = 'Deriving key…';
+async function enter(password) {
+  const vault = loadVault();
+  const key = await deriveKey(password, unb64(vault.kdf.salt), vault.kdf.iterations);
+  const payload = JSON.parse(await open_(key, vault.data));   // throws on a wrong password
+  const creds = sync.url ? (sync.id ? { id: sync.id, token: sync.token } : await syncCreds(password)) : null;
+  await openSession(key, vault, payload, false, creds);
+}
+
+async function createVault(password) {
   try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch { /* fine */ }
   const salt = rand(16);
-  const key = await deriveKey(pw, salt, KDF_IT);
+  const key = await deriveKey(password, salt, KDF_IT);
   const payload = { entries: [], seen: Date.now(), dataRev: 0, backedUpRev: 0 };
   const vault = {
     v: 1, rev: 1, savedAt: Date.now(),
@@ -903,19 +1039,86 @@ async function createVault(ev) {
     data: await seal(key, JSON.stringify(payload))
   };
   writeVault(vault);
-  $('#form-setup').reset();
-  btn.disabled = false; btn.textContent = 'Create vault';
-  await enter(pw, true);
+  await openSession(key, vault, payload, true, sync.url ? await syncCreds(password) : null);
 }
 
-async function unlock(ev) {
+/* First use asks twice, because a typo here is unrecoverable. After that it is
+   one password, one field. */
+let pendingNew = null;
+
+function gateMode(firstTime, confirming) {
+  $('#gate-lede').textContent = firstTime
+    ? (confirming
+        ? 'Once more, to be sure it is the password you think it is.'
+        : 'Nothing is locked here yet. Pick the password — it is the only one, and there is no reset.')
+    : 'Locked.';
+  $('#unlock-label').textContent = confirming ? 'Type it again' : 'Password';
+  $('#first-note').hidden = !firstTime || confirming;
+  $('#unlock-pw').setAttribute('autocomplete', firstTime ? 'new-password' : 'current-password');
+}
+
+async function submitGate(ev) {
   ev.preventDefault();
   const err = $('#unlock-error');
-  err.hidden = true;
+  const pw = $('#unlock-pw').value;
   const btn = $('#form-unlock button[type=submit]');
+  err.hidden = true;
+
+  if (!loadVault() && sync.url) {          // a new device may not be a new vault
+    btn.disabled = true; btn.textContent = 'Looking…';
+    try {
+      const creds = await syncCreds(pw);
+      sync.id = creds.id; sync.token = creds.token;
+      const remote = await syncPull();
+      if (remote) {
+        writeVault(remote);
+        try {
+          await enter(pw);
+          $('#unlock-pw').value = '';
+          btn.disabled = false; btn.textContent = 'Open';
+          toast('Picked your vault up from the site.');
+          return;
+        } catch {
+          localStorage.removeItem(STORE);     // that vault is not this password's
+          sync.id = sync.token = null;
+          err.textContent = 'A vault is saved under a different password.';
+          err.hidden = false;
+          btn.disabled = false; btn.textContent = 'Open';
+          return;
+        }
+      }
+    } catch { /* offline: fall through and set up locally */ }
+    btn.disabled = false; btn.textContent = 'Open';
+  }
+
+  if (!loadVault()) {                                   // first use
+    if (pendingNew === null) {
+      if (pw.length < 6) { err.textContent = 'Six characters or more.'; err.hidden = false; return; }
+      pendingNew = pw;
+      $('#unlock-pw').value = '';
+      gateMode(true, true);
+      $('#unlock-pw').focus();
+      return;
+    }
+    if (pw !== pendingNew) {
+      pendingNew = null;
+      $('#unlock-pw').value = '';
+      gateMode(true, false);
+      err.textContent = 'Those did not match. Start again.';
+      err.hidden = false;
+      return;
+    }
+    btn.disabled = true; btn.textContent = 'Setting up…';
+    await createVault(pw);
+    pendingNew = null;
+    $('#unlock-pw').value = '';
+    btn.disabled = false; btn.textContent = 'Open';
+    return;
+  }
+
   btn.disabled = true; btn.textContent = 'Opening…';
   try {
-    await enter($('#unlock-pw').value, false);
+    await enter(pw);
     $('#unlock-pw').value = '';
   } catch {
     err.textContent = 'Wrong password.';
@@ -936,6 +1139,12 @@ function setCodeMode(mode) {
 }
 
 async function boot() {
+  /* Paint the gate from what is already on disk, before any fetch: a slow
+     network should not mean a blank page. */
+  gateMode(!loadVault(), false);
+  show('view-unlock');
+
+  await loadConfig();
   let local = loadVault();
   const mirror = await idbGet();
   if (mirror && revOf(mirror) > revOf(local)) {
@@ -955,12 +1164,22 @@ async function boot() {
   /* If a site copy is ahead of a vault that is already here, the two have
      diverged and the choice is the user's — see the notice on the list. */
 
-  show(local ? 'view-unlock' : 'view-setup');
-  if (local) setTimeout(() => $('#unlock-pw').focus(), 30);
+  gateMode(!local, false);
+
+  if (local) {
+    const saved = await idbKey('get');
+    if (saved) {
+      try {
+        const payload = JSON.parse(await open_(saved, local.data));
+        $('#stay-open').checked = true;
+        return openSession(saved, local, payload, false);
+      } catch { await idbKey('del'); }     // password changed, or a stale key
+    }
+  }
+  setTimeout(() => $('#unlock-pw').focus(), 30);
 }
 
-$('#form-setup').addEventListener('submit', createVault);
-$('#form-unlock').addEventListener('submit', unlock);
+$('#form-unlock').addEventListener('submit', submitGate);
 $('#form-new').addEventListener('submit', newEntry);
 $('#restore-file').addEventListener('change', readRestore);
 $$('[data-restore]').forEach(b => b.addEventListener('click', restore));
@@ -976,6 +1195,11 @@ $('#btn-dl-json').addEventListener('click', downloadJson);
 $('#btn-dl-html').addEventListener('click', downloadHtml);
 $('#btn-dl-seed').addEventListener('click', downloadSeed);
 $('#btn-recheck').addEventListener('click', recheckSeed);
+$('#btn-sync-now').addEventListener('click', async () => {
+  $('#sync-status').textContent = 'Contacting…';
+  await settleWithRemote();
+  renderBackup();
+});
 $$('[data-cancel]').forEach(b => b.addEventListener('click', renderList));
 
 $('#cond-time').addEventListener('change', e => { $('#time-body').hidden = !e.target.checked; });
@@ -986,12 +1210,26 @@ $('#code-mode').addEventListener('click', ev => {
   if (chip) setCodeMode(chip.dataset.mode);
 });
 
+function setUntil(minutes) {
+  $('#new-until').value = localInput(now() + minutes * 60000);
+}
+
 $('#time-presets').addEventListener('click', ev => {
   const chip = ev.target.closest('.chip');
   if (!chip) return;
-  $('#new-until').value = localInput(now() + Number(chip.dataset.mins) * 60000);
+  setUntil(Number(chip.dataset.mins));
+  $('#dur-n').value = ''; 
   $$('#time-presets .chip').forEach(c => c.classList.toggle('is-on', c === chip));
 });
+
+function applyDuration() {
+  const n = Math.min(Math.abs(Number($('#dur-n').value) || 0), 500000);
+  if (n < 1) return;
+  setUntil(n * Number($('#dur-unit').value));
+  $$('#time-presets .chip').forEach(c => c.classList.remove('is-on'));
+}
+$('#dur-n').addEventListener('input', applyDuration);
+$('#dur-unit').addEventListener('change', applyDuration);
 
 $('#puzzle-presets').addEventListener('click', ev => {
   const chip = ev.target.closest('.chip');
