@@ -1,13 +1,15 @@
 /* Keepsafe — a screen time code locker that runs entirely in your browser.
-   Storage: one encrypted blob, kept in localStorage and mirrored to IndexedDB.
-   No network calls, ever. */
+   Storage: one encrypted blob, kept in localStorage, mirrored to IndexedDB, and
+   optionally deployed with the site as vault.json. The only request it ever
+   makes is a GET for that file and for restore.html; nothing is ever sent. */
 
 (() => {
 'use strict';
 
 const STORE   = 'keepsafe.vault.v1';
 const IDB_DB  = 'keepsafe', IDB_STORE = 'vault', IDB_KEY = 'v1';
-const KDF_IT  = 310000;   // vault password
+const KDF_IT  = 600000;   // vault password (OWASP's figure for PBKDF2-SHA256)
+const SEED    = 'vault.json';   // a copy of the vault deployed with the site
 const PZ_IT   = 600000;   // puzzle answer
 const IDLE_MS = 5 * 60 * 1000;
 const GUIDE_IDLE_MS = 30 * 60 * 1000;   // don't lock mid-walkthrough
@@ -92,6 +94,18 @@ async function idbGet() {
   } catch { return null; }
 }
 
+/* The page cannot write to its own files — there is no server to write with —
+   so the site copy is refreshed by committing a new vault.json. Read-only here,
+   and adopted only when it is ahead of what this browser holds. */
+async function fetchSeed() {
+  try {
+    const res = await fetch(SEED + '?t=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) return null;
+    const v = await res.json();
+    return (v && v.v === 1 && v.kdf && v.data) ? v : null;
+  } catch { return null; }          // missing file, file://, offline — all fine
+}
+
 function loadVault() {
   try { return JSON.parse(localStorage.getItem(STORE) || 'null'); }
   catch { return null; }
@@ -108,7 +122,7 @@ const revOf = v => (v && v.rev) || 0;
 /* ── state ─────────────────────────────────────────────────── */
 
 const state = { key: null, vault: null, payload: null, view: null, entryId: null };
-let ticker = null, idleTimer = null, lastPersist = 0;
+let ticker = null, idleTimer = null, lastPersist = 0, seed = null;
 
 /* Clock guard: winding the device clock back must not open anything, so the
    vault remembers the furthest point in time it has ever seen. */
@@ -358,8 +372,17 @@ function renderList() {
   if (!nag.hidden) {
     nag.innerHTML = `<span>${(state.payload.backedUpRev || 0) === 0
       ? 'Nothing here is backed up yet.'
-      : 'There are changes since your last backup.'} A browser can lose its storage — keep a copy.</span>
+      : 'There are changes since your last backup.'} A browser can lose its storage — keep a file, and a copy with the site.</span>
       <button class="btn" type="button" data-nag>Back it up</button>`;
+  }
+
+  const ahead = seed && revOf(seed) > revOf(state.vault);
+  const siteNag = $('#site-nag');
+  siteNag.hidden = !ahead;
+  if (ahead) {
+    siteNag.innerHTML = `<span>The copy deployed with the site is newer than this browser's
+      (saved ${esc(stamp(seed.savedAt || 0))}). Loading it replaces what is here.</span>
+      <button class="btn" type="button" data-load-seed>Load it</button>`;
   }
 
   $('#entry-list').innerHTML = entries.map(e => {
@@ -738,6 +761,51 @@ async function downloadHtml() {
   toast('Offline unlocker saved.');
 }
 
+function renderBackup() {
+  panel('backup');
+  const status = $('#site-copy-status');
+  const warn = $('#site-warning');
+  const here = revOf(state.vault);
+
+  if (!seed) {
+    status.textContent = 'Nothing is deployed with the site yet. Until there is, a cleared browser means reaching for a backup file.';
+  } else {
+    const when = seed.savedAt ? stamp(seed.savedAt) : 'an unknown date';
+    const gap = here - revOf(seed);
+    status.textContent = gap > 0
+      ? `Deployed copy saved ${when} — ${gap} change${gap === 1 ? '' : 's'} behind what is in this browser.`
+      : gap < 0
+        ? `Deployed copy saved ${when}, and it is newer than this browser's.`
+        : `Deployed copy saved ${when}. Up to date.`;
+  }
+
+  warn.hidden = location.protocol === 'file:';
+  warn.className = 'hint warn';
+  warn.textContent = 'Anyone who can reach the site can download this file. It is encrypted, and a long password is what stands behind that — so if the site is public, make the password a long one.';
+}
+
+async function downloadSeed() {
+  await persist(false);
+  download('vault.json', JSON.stringify(state.vault, null, 2), 'application/json');
+  toast('Now commit it at the root of the site.');
+}
+
+async function recheckSeed() {
+  $('#site-copy-status').textContent = 'Checking…';
+  seed = await fetchSeed();
+  renderBackup();
+  toast(seed ? 'The site is serving a vault file.' : 'No vault.json is being served yet.');
+}
+
+function loadSeed() {
+  if (!seed) return;
+  if (!confirm(`Replace this browser's vault with the copy deployed with the site (saved ${
+    seed.savedAt ? stamp(seed.savedAt) : 'unknown'})? Anything here that is not in it is lost.`)) return;
+  writeVault(seed);
+  lock();
+  toast('Loaded the site copy. Unlock it with the password it was saved under.');
+}
+
 function restore() { $('#restore-file').value = ''; $('#restore-file').click(); }
 
 async function readRestore(ev) {
@@ -877,6 +945,16 @@ async function boot() {
   } else if (local && revOf(local) > revOf(mirror)) {
     idbPut(local);
   }
+
+  seed = await fetchSeed();
+  if (seed && !local) {                       // nothing here: pure recovery
+    writeVault(seed);
+    local = seed;
+    toast('Loaded the vault deployed with the site.');
+  }
+  /* If a site copy is ahead of a vault that is already here, the two have
+     diverged and the choice is the user's — see the notice on the list. */
+
   show(local ? 'view-unlock' : 'view-setup');
   if (local) setTimeout(() => $('#unlock-pw').focus(), 30);
 }
@@ -893,9 +971,11 @@ $('#btn-new').addEventListener('click', () => {
   $('#new-until').value = localInput(now() + 24 * 3600 * 1000);
   $('#new-label').focus();
 });
-$('#btn-backup').addEventListener('click', () => panel('backup'));
+$('#btn-backup').addEventListener('click', renderBackup);
 $('#btn-dl-json').addEventListener('click', downloadJson);
 $('#btn-dl-html').addEventListener('click', downloadHtml);
+$('#btn-dl-seed').addEventListener('click', downloadSeed);
+$('#btn-recheck').addEventListener('click', recheckSeed);
 $$('[data-cancel]').forEach(b => b.addEventListener('click', renderList));
 
 $('#cond-time').addEventListener('change', e => { $('#time-body').hidden = !e.target.checked; });
@@ -928,7 +1008,8 @@ $('#puzzle-minutes').addEventListener('input', () => {
 $('#panel-list').addEventListener('click', ev => {
   const btn = ev.target.closest('.entry');
   if (btn) return renderEntry(btn.dataset.id);
-  if (ev.target.closest('[data-nag]')) panel('backup');
+  if (ev.target.closest('[data-nag]')) renderBackup();
+  if (ev.target.closest('[data-load-seed]')) loadSeed();
 });
 
 $('#entry-body').addEventListener('submit', ev => {

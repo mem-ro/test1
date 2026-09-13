@@ -27,7 +27,7 @@ python3 -m http.server 8000
 ## Locking something away
 
 **The password.** Choosing one creates the vault. It goes through PBKDF2‑SHA256
-(310,000 rounds) into an AES‑GCM‑256 key, and everything — labels, codes,
+(600,000 rounds) into an AES‑GCM‑256 key, and everything — labels, codes,
 puzzles, timestamps — is stored as one encrypted blob. The password itself is
 never stored, so there is no reset and no recovery.
 
@@ -117,6 +117,8 @@ A saved code should not be able to disappear. So:
 * **Two copies, two stores.** Every save writes to `localStorage` *and* mirrors
   to IndexedDB with a revision number. If one is cleared, the next load
   restores it from the other and says so.
+* **A third copy with the site**, if you commit one — see below. That is the
+  only copy a browser cannot throw away.
 * **Persistent storage** is requested from the browser when the vault is
   created, so it is not first in line for eviction.
 * **A locked entry cannot be deleted.** No button, no shortcut. Open it — wait
@@ -128,6 +130,34 @@ A saved code should not be able to disappear. So:
   saves do not trip it; real edits do.
 * The vault auto‑locks after five quiet minutes — thirty, mid‑walkthrough, so
   it never locks while you are at the keypad.
+
+## Keeping it with the site
+
+Browser storage is the convenient copy, not the reliable one. Safari deletes
+all script-writable storage — localStorage and IndexedDB alike — after seven
+days without a visit, and any "clear cookies and site data" takes both at once.
+So the vault can also live in the site's own files.
+
+**Backup → Copy kept with the site** writes `vault.json`. Commit it at the root
+of the site, next to `index.html`, and from then on:
+
+* a browser that has been wiped rebuilds itself from it on the next visit;
+* a new phone or laptop picks the vault up on its first visit;
+* the site is the source of truth you can actually see and version.
+
+A page cannot write to its own files — there is no server to write with — so
+this one is refreshed by hand: download, commit, press **re-check**. The backup
+screen says how many changes behind the deployed copy has fallen.
+
+Two rules keep it from eating your data. A deployed copy is adopted silently
+only when the browser has **nothing at all**; when both exist and the deployed
+one is newer, the site offers it and you choose. And an older deployed copy
+never overwrites newer work in the browser.
+
+The file is encrypted, but anyone who can reach the site can download it and
+attack it at their leisure, so **if the site is public, use a long password**.
+The vault key is PBKDF2‑SHA256 at 600,000 rounds, which makes that attack
+expensive but not impossible against a short password.
 
 ## Backups
 
@@ -155,6 +185,7 @@ yourself or keep it in cloud storage.
 | `styles.css` | the whole look; light and dark |
 | `app.js` | crypto, vault, storage mirroring, puzzle chains, dictation, UI |
 | `restore.html` | the standalone offline unlocker template |
+| `vault.json` | optional: your encrypted vault, deployed with the site |
 
 No dependencies. Needs `crypto.subtle`, which browsers only expose on
 `https://`, `localhost`, or `file://`.

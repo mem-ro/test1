@@ -81,6 +81,7 @@
       <button class="btn btn-solid" type="button" id="btn-new">Lock something</button>
     </div>
     <div id="backup-nag" class="nag" hidden></div>
+    <div id="site-nag" class="nag" hidden></div>
     <ul id="entry-list" class="entries"></ul>
     <p id="empty" class="empty" hidden>Nothing is locked yet.</p>
   </section>
@@ -184,7 +185,7 @@
       <button class="btn btn-quiet" type="button" data-cancel>Back</button>
     </div>
     <div class="stack">
-      <p class="lede">Two files. Both are still encrypted with your password — a backup reveals nothing on its own, and it does not skip any lock you set.</p>
+      <p class="lede">Two files to keep, and one copy to deploy with the site. All three are encrypted with your password — none reveals anything on its own, and none skips a lock you set.</p>
       <div class="backup-row">
         <div>
           <h3>Offline unlocker</h3>
@@ -198,6 +199,23 @@
           <p class="hint">The encrypted data by itself, for restoring into this site later.</p>
         </div>
         <button class="btn" type="button" id="btn-dl-json">Download .json</button>
+      </div>
+
+      <div class="backup-row">
+        <div>
+          <h3>Copy kept with the site</h3>
+          <p class="hint" id="site-copy-status">Checking…</p>
+        </div>
+        <button class="btn" type="button" id="btn-dl-seed">Download vault.json</button>
+      </div>
+      <div class="site-steps">
+        <p class="hint">A page cannot write to its own files, so this one is refreshed by hand — but once it is there, a wiped browser costs you nothing, and a new phone picks the vault up on its first visit.</p>
+        <ol class="steps">
+          <li>Download <span class="tt">vault.json</span> above.</li>
+          <li>Put it at the root of the site, next to <span class="tt">index.html</span>. On GitHub: <span class="tt">Add file → Upload files</span>, then commit.</li>
+          <li>Come back and press <button class="btn btn-quiet" type="button" id="btn-recheck">re-check</button> to confirm the site is serving it.</li>
+        </ol>
+        <p class="hint" id="site-warning" hidden></p>
       </div>
       <p class="hint">Keep a copy somewhere you will still have in a month: email it to yourself, drop it in cloud storage, put it on a USB stick.</p>
     </div>
