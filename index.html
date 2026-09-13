@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Keepsafe — screen time code locker</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%23141413'/><rect x='4.5' y='7' width='7' height='5.5' fill='%23f4f3ef'/><path d='M6 7V5.4a2 2 0 0 1 4 0V7' stroke='%23f4f3ef' fill='none' stroke-width='1.2'/></svg>">
+</head>
+<body>
+
+<!-- ── gate: create a password ───────────────────────────────── -->
+<main id="view-setup" class="sheet" hidden>
+  <header class="masthead">
+    <h1>Keepsafe</h1>
+    <p class="standfirst">Put a screen time code out of your own reach — until a date passes, until you count your way out, or both.</p>
+  </header>
+
+  <form id="form-setup" class="stack" autocomplete="off">
+    <div class="field">
+      <label for="setup-pw">Choose a password</label>
+      <input id="setup-pw" type="password" minlength="8" required autocomplete="new-password" spellcheck="false">
+      <p class="hint">Eight characters or more. It encrypts everything on this device. There is no reset.</p>
+    </div>
+    <div class="field">
+      <label for="setup-pw2">Type it again</label>
+      <input id="setup-pw2" type="password" required autocomplete="new-password" spellcheck="false">
+    </div>
+    <p id="setup-error" class="error" hidden></p>
+    <div class="row">
+      <button class="btn btn-solid" type="submit">Create vault</button>
+      <button class="btn btn-quiet" type="button" data-restore>Restore a backup</button>
+    </div>
+  </form>
+
+  <section class="note">
+    <h2>How it works</h2>
+    <ul>
+      <li>Everything stays in this browser. No account, no server, nothing sent anywhere.</li>
+      <li>The vault is encrypted with your password (PBKDF2 · 310,000 rounds → AES‑GCM 256).</li>
+      <li>A puzzle lock is real: the code is encrypted with the answer, so the count has to be done.</li>
+      <li>A date lock is a promise, not a cage — see the honesty note in the README.</li>
+    </ul>
+  </section>
+</main>
+
+<!-- ── gate: unlock ──────────────────────────────────────────── -->
+<main id="view-unlock" class="sheet" hidden>
+  <header class="masthead">
+    <h1>Keepsafe</h1>
+    <p class="standfirst">Locked.</p>
+  </header>
+  <form id="form-unlock" class="stack" autocomplete="off">
+    <div class="field">
+      <label for="unlock-pw">Password</label>
+      <input id="unlock-pw" type="password" required autocomplete="current-password" spellcheck="false">
+    </div>
+    <p id="unlock-error" class="error" hidden></p>
+    <div class="row">
+      <button class="btn btn-solid" type="submit">Open</button>
+      <button class="btn btn-quiet" type="button" data-restore>Restore a backup</button>
+    </div>
+  </form>
+</main>
+
+<!-- ── the vault ─────────────────────────────────────────────── -->
+<main id="view-app" class="sheet" hidden>
+  <header class="bar">
+    <h1 class="wordmark">Keepsafe</h1>
+    <nav class="bar-actions">
+      <button class="btn btn-quiet" type="button" id="btn-backup">Backup</button>
+      <button class="btn btn-quiet" type="button" id="btn-lock">Lock</button>
+    </nav>
+  </header>
+
+  <!-- list -->
+  <section id="panel-list" class="panel" hidden>
+    <div class="panel-head">
+      <h2>Locked away</h2>
+      <button class="btn btn-solid" type="button" id="btn-new">Lock something</button>
+    </div>
+    <ul id="entry-list" class="entries"></ul>
+    <p id="empty" class="empty" hidden>Nothing is locked yet.</p>
+  </section>
+
+  <!-- new entry -->
+  <section id="panel-new" class="panel" hidden>
+    <div class="panel-head">
+      <h2>Lock something away</h2>
+      <button class="btn btn-quiet" type="button" data-cancel>Cancel</button>
+    </div>
+
+    <form id="form-new" class="stack" autocomplete="off">
+      <div class="field">
+        <label for="new-label">Name it</label>
+        <input id="new-label" type="text" required maxlength="60" placeholder="iPhone screen time" spellcheck="false">
+      </div>
+
+      <div class="field">
+        <label for="new-secret">The code</label>
+        <textarea id="new-secret" rows="2" required placeholder="4172" spellcheck="false"></textarea>
+        <p class="hint">Write it down here once. After you save, it is gone from the screen.</p>
+      </div>
+
+      <fieldset class="field">
+        <legend>Conditions</legend>
+
+        <label class="check">
+          <input type="checkbox" id="cond-time" checked>
+          <span>Unlock on a date and time</span>
+        </label>
+        <div id="time-body" class="sub">
+          <div class="presets" id="time-presets">
+            <button class="chip" type="button" data-mins="60">1 hour</button>
+            <button class="chip" type="button" data-mins="480">8 hours</button>
+            <button class="chip" type="button" data-mins="1440">1 day</button>
+            <button class="chip" type="button" data-mins="10080">1 week</button>
+            <button class="chip" type="button" data-mins="43200">30 days</button>
+          </div>
+          <input id="new-until" type="datetime-local">
+        </div>
+
+        <label class="check">
+          <input type="checkbox" id="cond-puzzle">
+          <span>Unlock by solving a counting puzzle</span>
+        </label>
+        <div id="puzzle-body" class="sub" hidden>
+          <div class="presets" id="puzzle-presets">
+            <button class="chip" type="button" data-size="light">Light</button>
+            <button class="chip is-on" type="button" data-size="medium">Medium</button>
+            <button class="chip" type="button" data-size="heavy">Heavy</button>
+          </div>
+          <p class="hint">A block of characters with numbers hidden in it. To get the code back you count the numbers and type how many there were. The answer is the decryption key — there is no way around it but counting.</p>
+        </div>
+      </fieldset>
+
+      <p id="new-error" class="error" hidden></p>
+      <div class="row">
+        <button class="btn btn-solid" type="submit">Lock it</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- single entry -->
+  <section id="panel-entry" class="panel" hidden>
+    <div class="panel-head">
+      <h2 id="entry-title">—</h2>
+      <button class="btn btn-quiet" type="button" data-cancel>Back</button>
+    </div>
+    <div id="entry-body"></div>
+  </section>
+
+  <!-- backup -->
+  <section id="panel-backup" class="panel" hidden>
+    <div class="panel-head">
+      <h2>Backup</h2>
+      <button class="btn btn-quiet" type="button" data-cancel>Back</button>
+    </div>
+    <div class="stack">
+      <p class="lede">Two files. Both are still encrypted with your password — a backup reveals nothing on its own, and it does not skip any lock you set.</p>
+      <div class="backup-row">
+        <div>
+          <h3>Offline unlocker</h3>
+          <p class="hint">One HTML file with your vault baked in. Open it in any browser, with or without the internet, and it behaves like this page. This is the one to keep.</p>
+        </div>
+        <button class="btn btn-solid" type="button" id="btn-dl-html">Download .html</button>
+      </div>
+      <div class="backup-row">
+        <div>
+          <h3>Vault file</h3>
+          <p class="hint">The encrypted data by itself, for restoring into this site later.</p>
+        </div>
+        <button class="btn" type="button" id="btn-dl-json">Download .json</button>
+      </div>
+      <p class="hint">Keep a copy somewhere you will still have in a month: email it to yourself, drop it in cloud storage, put it on a USB stick.</p>
+    </div>
+  </section>
+</main>
+
+<input type="file" id="restore-file" accept="application/json,.json" hidden>
+<div id="toast" class="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>

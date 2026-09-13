@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keepsafe — offline unlocker</title>
+<style>
+:root{--paper:#f4f3ef;--ink:#141413;--muted:#6d6a62;--rule:#d9d5cb;--accent:#a8341f;--field:#fffefb;
+--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+--mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace}
+@media(prefers-color-scheme:dark){:root{--paper:#131312;--ink:#e9e6df;--muted:#918d84;--rule:#302f2c;--accent:#e0705a;--field:#1b1b19}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 var(--sans);padding:0 20px 80px}
+main{max-width:640px;margin:0 auto;padding-top:64px}
+h1{font-size:30px;font-weight:600;letter-spacing:-.015em;margin:0}
+h2{font-size:20px;font-weight:600;margin:0}
+h3{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:0 0 10px;font-weight:600}
+.standfirst{color:var(--muted);margin:10px 0 40px;max-width:48ch}
+label{display:block;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+input{width:100%;font:inherit;color:var(--ink);background:var(--field);border:1px solid var(--rule);border-radius:2px;padding:10px 12px}
+input[type=number]{font-family:var(--mono);width:130px}
+input:focus{outline:2px solid var(--ink);outline-offset:-1px}
+.btn{font:inherit;font-size:14px;color:var(--ink);background:transparent;border:1px solid var(--ink);padding:8px 16px;border-radius:2px;cursor:pointer}
+.btn:hover{background:var(--ink);color:var(--paper)}
+.solid{background:var(--ink);color:var(--paper)}
+.btn:disabled{opacity:.38;cursor:not-allowed}
+.row{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-top:18px}
+.err{color:var(--accent);font-size:14px;margin:14px 0 0}
+.hint{font-size:13px;color:var(--muted);margin:8px 0 0;max-width:60ch}
+ul{list-style:none;margin:34px 0 0;padding:0;border-top:1px solid var(--rule)}
+li{border-bottom:1px solid var(--rule);padding:16px 0;display:flex;gap:16px;justify-content:space-between;align-items:baseline}
+.name{font-size:17px}
+.meta{font:12px/1.4 var(--mono);color:var(--muted);margin-top:5px}
+.state{font:12px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;color:var(--muted)}
+pre{font:14px/1.85 var(--mono);background:var(--field);border:1px solid var(--rule);padding:16px;white-space:pre;overflow-x:auto;letter-spacing:.22em;user-select:none;margin:0 0 16px}
+.code{font-family:var(--mono);font-size:clamp(24px,7vw,34px);word-break:break-all;background:var(--field);border:1px solid var(--ink);padding:20px;margin:0}
+.gauge{font-family:var(--mono);font-size:clamp(28px,8vw,40px);margin:0;font-variant-numeric:tabular-nums}
+section{margin-top:34px;border-top:1px solid var(--rule);padding-top:22px}
+.back{background:none;border:0;font:inherit;font-size:14px;color:var(--muted);text-decoration:underline;text-underline-offset:4px;cursor:pointer;padding:0}
+</style>
+</head>
+<body>
+<main>
+  <h1>Keepsafe</h1>
+  <p class="standfirst" id="lede">Offline unlocker. This single file holds your vault and everything needed to open it — no internet, no website.</p>
+
+  <div id="pick" hidden>
+    <label for="file">Vault file</label>
+    <input id="file" type="file" accept="application/json,.json">
+    <p class="hint">Choose the <code>keepsafe-vault-….json</code> you downloaded.</p>
+  </div>
+
+  <form id="gate" hidden autocomplete="off">
+    <label for="pw">Password</label>
+    <input id="pw" type="password" required autocomplete="current-password">
+    <div class="row"><button class="btn solid" type="submit">Open</button></div>
+    <p class="err" id="gate-err" hidden>Wrong password.</p>
+  </form>
+
+  <div id="list" hidden></div>
+  <div id="detail" hidden></div>
+</main>
+
+<script>
+var EMBEDDED = null; // __KEEPSAFE_EMBED__
+
+(function () {
+'use strict';
+var $ = function (s) { return document.querySelector(s); };
+var te = new TextEncoder(), td = new TextDecoder();
+var vault = EMBEDDED, payload = null, seen = 0, timer = null;
+
+function unb64(str){var b=atob(str),o=new Uint8Array(b.length);for(var i=0;i<b.length;i++)o[i]=b.charCodeAt(i);return o;}
+function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+function now(){return Math.max(Date.now(), seen);}
+
+function deriveKey(secret, salt, it) {
+  return crypto.subtle.importKey('raw', te.encode(secret), 'PBKDF2', false, ['deriveKey'])
+    .then(function (base) {
+      return crypto.subtle.deriveKey({name:'PBKDF2',salt:salt,iterations:it,hash:'SHA-256'},
+        base, {name:'AES-GCM',length:256}, false, ['encrypt','decrypt']);
+    });
+}
+function openBlob(key, blob) {
+  return crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(blob.iv)}, key, unb64(blob.ct))
+    .then(function (pt) { return td.decode(pt); });
+}
+
+function countdown(ms){
+  if(ms<=0)return '00:00:00';
+  var s=Math.floor(ms/1000),d=Math.floor(s/86400);
+  var pad=function(n){return String(n).padStart(2,'0');};
+  return (d?d+'d ':'')+pad(Math.floor(s%86400/3600))+':'+pad(Math.floor(s%3600/60))+':'+pad(s%60);
+}
+function stamp(ms){return new Date(ms).toLocaleString([], {year:'numeric',month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
+
+function start() {
+  if (vault) { $('#gate').hidden = false; $('#pw').focus(); }
+  else { $('#pick').hidden = false; $('#lede').textContent = 'Offline unlocker. Load a Keepsafe vault file and open it with its password — no internet, no website.'; }
+}
+
+$('#file').addEventListener('change', function (ev) {
+  var f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+  f.text().then(function (t) {
+    try { vault = JSON.parse(t); } catch (e) { alert('That file is not readable.'); return; }
+    if (!vault || !vault.kdf || !vault.data) { alert('That is not a Keepsafe vault file.'); vault = null; return; }
+    $('#pick').hidden = true; $('#gate').hidden = false; $('#pw').focus();
+  });
+});
+
+$('#gate').addEventListener('submit', function (ev) {
+  ev.preventDefault();
+  var btn = $('#gate button'); btn.disabled = true; btn.textContent = 'Opening…';
+  $('#gate-err').hidden = true;
+  deriveKey($('#pw').value, unb64(vault.kdf.salt), vault.kdf.iterations)
+    .then(function (k) { return openBlob(k, vault.data); })
+    .then(function (json) {
+      payload = JSON.parse(json);
+      seen = payload.seen || 0;
+      $('#gate').hidden = true; $('#pw').value = '';
+      renderList();
+      timer = setInterval(tickClocks, 1000);
+    })
+    .catch(function () { $('#gate-err').hidden = false; })
+    .then(function () { btn.disabled = false; btn.textContent = 'Open'; });
+});
+
+function renderList() {
+  $('#detail').hidden = true;
+  var el = $('#list'); el.hidden = false;
+  var rows = (payload.entries || []).map(function (e, i) {
+    var left = e.unlockAt ? e.unlockAt - now() : 0;
+    var state = e.opened ? 'Open' : (left > 0 ? 'Locked' : (e.puzzle ? 'Puzzle' : 'Ready'));
+    var meta = [];
+    if (e.unlockAt) meta.push(left > 0 ? 'opens ' + stamp(e.unlockAt) : 'date passed');
+    if (e.puzzle && !e.opened) meta.push(e.puzzle.size + ' puzzle');
+    return '<li><span><span class="name">' + esc(e.label) + '</span>' +
+      '<span class="meta">' + esc(meta.join('  ·  ')) + '</span></span>' +
+      '<span><button class="btn" data-i="' + i + '">View</button> ' +
+      '<span class="state">' + state + '</span></span></li>';
+  }).join('');
+  el.innerHTML = '<h2>Locked away</h2><ul>' + (rows || '<li><span class="meta">Nothing in this vault.</span></li>') + '</ul>' +
+    '<p class="hint">This file is a snapshot. Solving a puzzle here shows the code but changes nothing — the website keeps its own copy.</p>';
+}
+
+$('#list').addEventListener('click', function (ev) {
+  var b = ev.target.closest('[data-i]');
+  if (b) renderEntry(Number(b.dataset.i));
+});
+
+function renderEntry(i) {
+  var e = payload.entries[i];
+  $('#list').hidden = true;
+  var el = $('#detail'); el.hidden = false;
+  var left = e.unlockAt ? e.unlockAt - now() : 0;
+  var html = '<h2>' + esc(e.label) + '</h2><section>';
+
+  if (e.opened || (!e.puzzle && left <= 0)) {
+    html += '<h3>The code</h3><p class="code">' + esc(e.secret) + '</p>';
+  } else if (left > 0) {
+    html += '<h3>Still locked</h3><p class="gauge" data-at="' + e.unlockAt + '">' + countdown(left) + '</p>' +
+            '<p class="hint">until ' + esc(stamp(e.unlockAt)) + (e.puzzle ? ', then a ' + esc(e.puzzle.size) + ' counting puzzle' : '') + '</p>';
+  } else {
+    html += '<h3>Count the numbers</h3><pre>' + esc(e.puzzle.body) + '</pre>' +
+      '<form id="ans"><input id="n" type="number" min="0" inputmode="numeric" required placeholder="how many">' +
+      '<div class="row"><button class="btn solid" type="submit">Unlock</button></div></form>' +
+      '<p class="hint" id="ans-note">A run of digits counts as one number. The count is the decryption key.</p>';
+  }
+
+  html += '</section><div class="row"><button class="back" type="button" id="back">← everything else</button></div>';
+  el.innerHTML = html;
+  $('#back').addEventListener('click', renderList);
+  var f = $('#ans');
+  if (f) f.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var note = $('#ans-note'); note.textContent = 'Checking…';
+    deriveKey($('#n').value.trim(), unb64(e.puzzle.salt), 600000)
+      .then(function (k) { return openBlob(k, e.puzzle); })
+      .then(function (secret) {
+        el.querySelector('section').innerHTML = '<h3>The code</h3><p class="code">' + esc(secret) + '</p>';
+      })
+      .catch(function () { note.textContent = 'Not the right count. Try again.'; });
+  });
+}
+
+function tickClocks() {
+  var g = document.querySelector('[data-at]');
+  if (!g) return;
+  var left = Number(g.dataset.at) - now();
+  g.textContent = countdown(left);
+  if (left <= 0) location.reload ? renderList() : null;
+}
+
+start();
+})();
+</script>
+</body>
+</html>
