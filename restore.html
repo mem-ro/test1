@@ -77,7 +77,7 @@ var EMBEDDED = null; // __KEEPSAFE_EMBED__
 'use strict';
 var $ = function (s) { return document.querySelector(s); };
 var te = new TextEncoder(), td = new TextDecoder();
-var vault = EMBEDDED, payload = null, seen = 0, solved = {};
+var vault = EMBEDDED, payload = null, seen = 0, solved = {}, runs = {};
 
 function unb64(str){var b=atob(str),o=new Uint8Array(b.length);for(var i=0;i<b.length;i++)o[i]=b.charCodeAt(i);return o;}
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
@@ -238,7 +238,8 @@ function renderList() {
     var state = e.opened ? 'Open' : (left > 0 ? 'Locked' : (e.puzzle ? 'Puzzle' : 'Ready'));
     var meta = [];
     if (e.unlockAt) meta.push(left > 0 ? 'opens ' + stamp(e.unlockAt) : 'date passed');
-    if (e.puzzle && !e.opened) meta.push(e.puzzle.size + ' puzzle');
+    if (e.puzzle && !e.opened) meta.push(e.puzzle.rounds
+      ? ((e.puzzle.done || 0) + '/' + e.puzzle.rounds + ' blocks counted') : 'counting puzzle');
     if (e.guide && !e.opened) meta.push('can be dictated');
     return '<li><span><span class="name">' + esc(e.label) + '</span>' +
       '<span class="meta">' + esc(meta.join('  ·  ')) + '</span></span>' +
@@ -268,10 +269,16 @@ function renderEntry(i) {
     html += '<h3>Still locked</h3><p class="gauge" data-at="' + e.unlockAt + '">' + countdown(left) + '</p>' +
             '<p class="hint">until ' + esc(stamp(e.unlockAt)) + (e.puzzle ? ', then a ' + esc(e.puzzle.size) + ' counting puzzle' : '') + '</p>';
   } else if (e.puzzle && e.puzzle.body) {
-    html += '<h3>Count the numbers</h3><pre>' + esc(e.puzzle.body) + '</pre>' +
+    if (!runs[i]) runs[i] = {body:e.puzzle.body, salt:e.puzzle.salt, links:e.puzzle.links,
+                             iv:e.puzzle.iv, ct:e.puzzle.ct, done:e.puzzle.done||0, rounds:e.puzzle.rounds||1};
+    var r = runs[i];
+    html += '<h3>Block ' + (r.done + 1) + ' of ' + r.rounds + '</h3>' +
+      '<div class="track"><span style="width:' + Math.round(r.done / r.rounds * 100) + '%"></span></div>' +
+      '<p class="hint" style="margin:14px 0 16px">A run of digits counts as one number. Each answer decrypts the next block; the last one decrypts the code.</p>' +
+      '<pre>' + esc(r.body) + '</pre>' +
       '<form id="ans"><input id="n" type="number" min="0" inputmode="numeric" required placeholder="how many">' +
-      '<div class="row"><button class="btn solid" type="submit">Unlock</button></div></form>' +
-      '<p class="hint" id="ans-note">A run of digits counts as one number. The count is the decryption key.</p>';
+      '<div class="row"><button class="btn solid" type="submit">Next block</button></div></form>' +
+      '<p class="hint" id="ans-note">Counting here does not save your place — this file is a snapshot.</p>';
   }
 
   var dictable = code || e.guide;
@@ -294,10 +301,17 @@ function renderEntry(i) {
   if (f) f.addEventListener('submit', function (ev) {
     ev.preventDefault();
     var note = $('#ans-note'); note.textContent = 'Checking…';
-    deriveKey($('#n').value.trim(), unb64(e.puzzle.salt), 600000)
-      .then(function (k) { return openBlob(k, e.puzzle); })
-      .then(function (secret) { solved[i] = secret; renderEntry(i); })
-      .catch(function () { note.textContent = 'Not the right count. Try again.'; });
+    var r = runs[i], chained = !!r.links;
+    deriveKey($('#n').value.trim(), unb64(r.salt), chained ? 120000 : 600000)
+      .then(function (k) { return openBlob(k, chained ? r.links[r.done] : r); })
+      .then(function (out) {
+        var link = chained ? JSON.parse(out) : { code: out };
+        if (link.code === undefined) {
+          r.body = link.body; r.salt = link.salt; r.done++;
+          renderEntry(i);
+        } else { solved[i] = link.code; renderEntry(i); }
+      })
+      .catch(function () { note.textContent = 'Not the right count for this block. Try again.'; });
   });
 }
 

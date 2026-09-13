@@ -133,11 +133,13 @@
         </label>
         <div id="puzzle-body" class="sub" hidden>
           <div class="presets" id="puzzle-presets">
-            <button class="chip" type="button" data-size="light">Light</button>
-            <button class="chip is-on" type="button" data-size="medium">Medium</button>
-            <button class="chip" type="button" data-size="heavy">Heavy</button>
+            <button class="chip" type="button" data-min="5">5 min</button>
+            <button class="chip is-on" type="button" data-min="20">20 min</button>
+            <button class="chip" type="button" data-min="45">45 min</button>
+            <button class="chip" type="button" data-min="90">90 min</button>
           </div>
-          <p class="hint">A block of characters with numbers hidden in it. To get the code back you count the numbers and type how many there were. The answer is the decryption key — there is no way around it but counting.</p>
+          <p class="inline-field">or <input id="puzzle-minutes" type="number" min="1" max="240" value="20"> minutes of counting</p>
+          <p class="hint">Blocks of characters with numbers hidden in them. You count the numbers in one, type how many, and that answer decrypts the next block — the last one decrypts the code. Priced in minutes, because the tedium is the lock: there is no way through but counting, one block at a time.</p>
         </div>
       </fieldset>
 

@@ -131,33 +131,37 @@ async function persist(changed) {
 const backupStale = () => (state.payload.dataRev || 0) > (state.payload.backedUpRev || 0);
 
 /* ── puzzle ────────────────────────────────────────────────── */
+/* Retrieval is priced in minutes, not difficulty: you pick how long getting
+   the code back should take, and that becomes a chain of counting blocks.
+   Each block's answer decrypts the next one, and the last one decrypts the
+   code — so the whole run has to be counted, in order, by hand. */
 
-const SIZES = {
-  light:  { lines: 8,  cols: 30, numbers: 22 },
-  medium: { lines: 16, cols: 34, numbers: 48 },
-  heavy:  { lines: 28, cols: 38, numbers: 95 }
-};
+const BLOCK = { lines: 16, cols: 34, numbers: 48 };
+const BLOCK_SECONDS = 90;          // roughly how long one block takes to count
+const CHAIN_IT = 120000;           // per link; the answer space is tiny either way
+
+const roundsFor = minutes => Math.max(1, Math.round(minutes * 60 / BLOCK_SECONDS));
+const minutesLeft = p => Math.round((p.rounds - (p.done || 0)) * BLOCK_SECONDS / 60);
 
 /* A block of letters with whole numbers scattered through it. The answer is
    how many numbers there are (a run of digits counts once). */
-function makePuzzle(size) {
-  const spec = SIZES[size] || SIZES.medium;
+function makeBlock() {
   const letters = 'abcdefghijkmnopqrstuvwxyz';
   const cells = [];
-  for (let i = 0; i < spec.lines * spec.cols; i++) {
+  for (let i = 0; i < BLOCK.lines * BLOCK.cols; i++) {
     cells.push(letters[Math.floor(Math.random() * letters.length)]);
   }
 
   let placed = 0, guard = 0;
-  while (placed < spec.numbers && guard++ < spec.numbers * 200) {
+  while (placed < BLOCK.numbers && guard++ < BLOCK.numbers * 200) {
     const len = 1 + Math.floor(Math.random() * 3);
-    const line = Math.floor(Math.random() * spec.lines);
-    const col = Math.floor(Math.random() * (spec.cols - len));
-    const start = line * spec.cols + col;
+    const line = Math.floor(Math.random() * BLOCK.lines);
+    const col = Math.floor(Math.random() * (BLOCK.cols - len));
+    const start = line * BLOCK.cols + col;
     let clear = true;
     for (let i = -1; i <= len; i++) {                 // keep a letter either side
       const c = cells[start + i];
-      if (col + i >= 0 && col + i < spec.cols && c !== undefined && /[0-9]/.test(c)) clear = false;
+      if (col + i >= 0 && col + i < BLOCK.cols && c !== undefined && /[0-9]/.test(c)) clear = false;
     }
     if (!clear) continue;
     for (let i = 0; i < len; i++) cells[start + i] = String(Math.floor(Math.random() * 10));
@@ -165,9 +169,36 @@ function makePuzzle(size) {
   }
 
   const rows = [];
-  for (let l = 0; l < spec.lines; l++) rows.push(cells.slice(l * spec.cols, (l + 1) * spec.cols).join(''));
+  for (let l = 0; l < BLOCK.lines; l++) rows.push(cells.slice(l * BLOCK.cols, (l + 1) * BLOCK.cols).join(''));
   const body = rows.join('\n');
   return { body, answer: (body.match(/\d+/g) || []).length };
+}
+
+/* Each block's answer unlocks the next block, and the last one unlocks the
+   code. The links sit side by side rather than nested, so a long puzzle costs
+   linear space instead of doubling with every block. */
+async function buildPuzzle(secret, minutes, onProgress) {
+  const rounds = roundsFor(minutes);
+  const blocks = [];
+  for (let k = 0; k < rounds; k++) {
+    const { body, answer } = makeBlock();
+    blocks.push({ body, answer, salt: rand(16) });
+  }
+
+  const links = [];
+  for (let k = 0; k < rounds; k++) {
+    const key = await deriveKey(String(blocks[k].answer), blocks[k].salt, CHAIN_IT);
+    links.push(await seal(key, k + 1 < rounds
+      ? JSON.stringify({ body: blocks[k + 1].body, salt: b64(blocks[k + 1].salt) })
+      : JSON.stringify({ code: secret })));
+    if (onProgress) onProgress(k + 1, rounds);
+  }
+
+  return {
+    kind: 'chain', minutes, rounds, done: 0,
+    body: blocks[0].body, salt: b64(blocks[0].salt), links,
+    attempts: 0, nextTryAt: 0
+  };
 }
 
 /* ── dictation ─────────────────────────────────────────────── */
@@ -339,7 +370,9 @@ function renderList() {
         ? `opens ${stamp(e.unlockAt)} · ${countdown(e.unlockAt - now())}`
         : `date passed ${stamp(e.unlockAt)}`);
     }
-    if (e.puzzle && !e.opened) bits.push(`${e.puzzle.size} puzzle`);
+    if (e.puzzle && !e.opened) bits.push(e.puzzle.rounds
+      ? `puzzle ${e.puzzle.done || 0}/${e.puzzle.rounds} · ~${minutesLeft(e.puzzle)} min left`
+      : 'counting puzzle');
     if (e.opened) bits.push(`opened ${stamp(e.openedAt)}`);
     if (!e.dictated && e.madeUp) bits.push('never typed into a device');
     return `<li><button class="entry" type="button" data-id="${esc(e.id)}">
@@ -374,7 +407,7 @@ function renderEntry(id) {
     parts.push(`<p class="gauge" data-clock="${e.unlockAt}">${countdown(timeLeft)}</p>
       <p class="gauge-label">until ${esc(stamp(e.unlockAt))}</p>`);
     if (clockSuspect()) parts.push(`<p class="error">This device's clock is behind the last time Keepsafe saw. The countdown is running on the later of the two.</p>`);
-    if (e.puzzle) parts.push(`<p class="hint">A ${e.puzzle.size} counting puzzle is waiting after the date passes.</p>`);
+    if (e.puzzle) parts.push(`<p class="hint">About ${e.puzzle.minutes || 20} minutes of counting is waiting after the date passes.</p>`);
     parts.push(`<div class="block"><h3>Change your mind the hard way</h3>
       <div class="row">
         <button class="btn" type="button" data-extend="60">+1 hour</button>
@@ -383,16 +416,24 @@ function renderEntry(id) {
       </div>
       <p class="hint">A lock can be made longer, never shorter.</p></div>`);
   } else if (e.puzzle) {
-    const wait = (e.puzzle.nextTryAt || 0) - now();
-    parts.push(`<p class="lede">Count the numbers in the block. A run of digits — <span class="tt">4</span>, <span class="tt">17</span>, <span class="tt">903</span> — counts as one number.</p>
-      <pre class="grid">${esc(e.puzzle.body)}</pre>
+    const p = e.puzzle;
+    const wait = (p.nextTryAt || 0) - now();
+    const done = p.done || 0;
+    parts.push(`<div class="counter">
+        <span class="counter-now">Block ${done + 1} of ${p.rounds}</span>
+        <span class="counter-left">about ${minutesLeft(p)} min of counting left</span>
+      </div>
+      <div class="track"><span style="width:${Math.round(done / p.rounds * 100)}%"></span></div>
+      <p class="lede" style="margin-top:26px">Count the numbers in the block. A run of digits — <span class="tt">4</span>, <span class="tt">17</span>, <span class="tt">903</span> — counts as one number.</p>
+      <pre class="grid">${esc(p.body)}</pre>
       <form class="answer" id="form-answer">
         <input type="number" id="answer" inputmode="numeric" min="0" required placeholder="how many"${wait > 0 ? ' disabled' : ''}>
-        <button class="btn btn-solid" type="submit"${wait > 0 ? ' disabled' : ''}>Unlock</button>
+        <button class="btn btn-solid" type="submit"${wait > 0 ? ' disabled' : ''}>${done + 1 < p.rounds ? 'Next block' : 'Unlock'}</button>
       </form>
-      <p class="hint" id="answer-note" data-clock="${wait > 0 ? e.puzzle.nextTryAt : ''}">${wait > 0
-        ? `Wrong answer. Try again in ${countdown(wait)}.`
-        : (e.puzzle.attempts ? `${e.puzzle.attempts} wrong ${e.puzzle.attempts === 1 ? 'try' : 'tries'} so far.` : 'The count is the decryption key, so a wrong number simply will not open it.')}</p>`);
+      <p class="hint" id="answer-note" data-clock="${wait > 0 ? p.nextTryAt : ''}">${wait > 0
+        ? `Wrong count. Try this block again in ${countdown(wait)}.`
+        : (p.attempts ? `${p.attempts} wrong ${p.attempts === 1 ? 'try' : 'tries'} on this block.`
+          : `Each answer decrypts the next block${p.rounds > 1 ? `, and the last one decrypts the code` : ''}. A wrong number opens nothing.`)}</p>`);
   } else {
     parts.push(`<div class="reveal">${esc(e.secret)}</div>
       <div class="row"><button class="btn" type="button" data-copy>Copy</button></div>`);
@@ -411,7 +452,9 @@ function renderEntry(id) {
   parts.push(`<div class="block"><h3>Details</h3><dl class="facts">
     <div><dt>Locked</dt><dd>${esc(stamp(e.createdAt))}</dd></div>
     ${e.unlockAt ? `<div><dt>Opens</dt><dd>${esc(stamp(e.unlockAt))}</dd></div>` : ''}
-    <div><dt>Puzzle</dt><dd>${e.puzzle ? esc(e.puzzle.size) + (e.opened ? ' · solved' : '') : 'none'}</dd></div>
+    <div><dt>Puzzle</dt><dd>${e.puzzle
+      ? (e.puzzle.rounds ? `${e.puzzle.rounds} blocks · ~${e.puzzle.minutes} min` : 'one block') + (e.opened ? ' · solved' : '')
+      : 'none'}</dd></div>
     <div><dt>Origin</dt><dd>${e.madeUp ? 'invented here, never shown' : 'typed in by you'}</dd></div>
     </dl>
     ${e.opened
@@ -551,26 +594,45 @@ async function tryAnswer(ev) {
   const note = $('#answer-note');
   const guess = $('#answer').value.trim();
   if (!e || guess === '') return;
+  const p = e.puzzle;
 
   note.textContent = 'Checking…';
-  const key = await deriveKey(guess, unb64(e.puzzle.salt), PZ_IT);
-  let secret = null;
-  try { secret = await open_(key, e.puzzle); } catch { /* wrong count */ }
+  let link = null;
+  try {
+    if (p.links) {                                  // a chain of blocks
+      const key = await deriveKey(guess, unb64(p.salt), CHAIN_IT);
+      link = JSON.parse(await open_(key, p.links[p.done || 0]));
+    } else {                                        // a single-block vault from before
+      const key = await deriveKey(guess, unb64(p.salt), PZ_IT);
+      link = { code: await open_(key, p) };
+    }
+  } catch { /* wrong count */ }
 
-  if (secret === null) {
-    e.puzzle.attempts = (e.puzzle.attempts || 0) + 1;
-    const wait = Math.min(30000 * 2 ** (e.puzzle.attempts - 1), 30 * 60000);
-    e.puzzle.nextTryAt = now() + wait;
+  if (!link) {
+    p.attempts = (p.attempts || 0) + 1;
+    const wait = Math.min(30000 * 2 ** (p.attempts - 1), 5 * 60000);
+    p.nextTryAt = now() + wait;
     await persist(false);
     renderEntry(e.id);
-    toast('Not the right count.');
+    toast('Not the right count for this block.');
     return;
   }
 
-  e.secret = secret;
+  if (link.code === undefined) {                    // on to the next block
+    p.body = link.body; p.salt = link.salt;
+    p.done = (p.done || 0) + 1;
+    p.attempts = 0; p.nextTryAt = 0;
+    await persist(true);
+    renderEntry(e.id);
+    toast(`Block ${p.done} of ${p.rounds} counted.`);
+    return;
+  }
+
+  e.secret = link.code;
   e.opened = true;
   e.openedAt = now();
-  delete e.puzzle.body;
+  p.done = p.rounds;
+  delete p.body; delete p.links;
   await persist(true);
   renderEntry(e.id);
 }
@@ -609,12 +671,13 @@ async function newEntry(ev) {
   };
 
   if (usePuzzle) {
-    const size = $('#puzzle-presets .is-on').dataset.size;
-    const { body, answer } = makePuzzle(size);
-    const salt = rand(16);
-    const key = await deriveKey(String(answer), salt, PZ_IT);
-    const blob = await seal(key, secret);
-    entry.puzzle = { size, body, salt: b64(salt), iv: blob.iv, ct: blob.ct, attempts: 0, nextTryAt: 0 };
+    const minutes = Math.min(240, Math.max(1, Number($('#puzzle-minutes').value) || 20));
+    const btn = $('#form-new button[type=submit]');
+    btn.disabled = true;
+    entry.puzzle = await buildPuzzle(secret, minutes, (k, n) => {
+      btn.textContent = `Building block ${k} of ${n}…`;
+    });
+    btn.disabled = false; btn.textContent = 'Lock it';
   } else {
     entry.secret = secret;                 // already behind the vault password
   }
@@ -853,7 +916,13 @@ $('#time-presets').addEventListener('click', ev => {
 $('#puzzle-presets').addEventListener('click', ev => {
   const chip = ev.target.closest('.chip');
   if (!chip) return;
+  $('#puzzle-minutes').value = chip.dataset.min;
   $$('#puzzle-presets .chip').forEach(c => c.classList.toggle('is-on', c === chip));
+});
+
+$('#puzzle-minutes').addEventListener('input', () => {
+  const v = $('#puzzle-minutes').value;
+  $$('#puzzle-presets .chip').forEach(c => c.classList.toggle('is-on', c.dataset.min === v));
 });
 
 $('#panel-list').addEventListener('click', ev => {

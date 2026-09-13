@@ -238,3 +238,15 @@ textarea { resize: vertical; }
   padding: 14px 16px; margin-bottom: 26px; font-size: 14px;
 }
 .nag span { max-width: 46ch; }
+
+/* ── counting run ───────────────────────────────────────── */
+
+.counter {
+  display: flex; gap: 16px; justify-content: space-between; align-items: baseline;
+  flex-wrap: wrap; margin-bottom: 12px;
+}
+.counter-now { font: 20px/1.2 var(--mono); letter-spacing: -0.01em; }
+.counter-left { font: 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+
+.inline-field { margin: 0 0 12px; font-size: 14px; color: var(--muted); }
+.inline-field input { width: 74px; margin: 0 4px; padding: 6px 8px; text-align: center; }

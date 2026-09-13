@@ -40,13 +40,20 @@ further out at any time; it can never be pulled in. Winding the device clock
 back does not help — the vault records the furthest point in time it has ever
 seen and counts down from the later of the two.
 
-**A counting puzzle.** A block of letters with numbers scattered through it —
-`4`, `17`, `903`, each run of digits counting once. To get the code back you
-count them and type how many there were. This one is not a rule the interface
-enforces, it is arithmetic: the answer is run through PBKDF2 (600,000 rounds)
-and used as the key the code was encrypted with, so a wrong count decrypts to
-nothing. Light (~22 numbers), medium (~48), heavy (~95). Wrong answers earn a
-doubling cooldown, starting at 30 seconds.
+**A counting puzzle, priced in minutes.** You do not pick a difficulty, you
+pick how long getting the code back should cost you — five minutes, twenty,
+ninety. That becomes a run of blocks: letters with numbers scattered through
+them, `4`, `17`, `903`, each run of digits counting once. Count the numbers in
+a block, type how many, and that answer decrypts the next block; the last one
+decrypts the code. One block takes about ninety seconds, so twenty minutes is
+thirteen of them.
+
+This is not a rule the interface enforces, it is arithmetic: each answer is run
+through PBKDF2 and used as the key its link was encrypted with, so a wrong
+count decrypts nothing and the run cannot be skipped or reordered. Wrong
+answers earn a doubling cooldown on that block, starting at 30 seconds and
+capped at five minutes. Progress is saved as you go — a reload, or coming back
+tomorrow, does not throw away the blocks you already counted.
 
 Pick either condition or both. With both, the date comes first and the puzzle
 waits behind it.
@@ -86,9 +93,11 @@ The realistic adversary here is you, ten minutes from now, wanting the code
 back.
 
 * The **puzzle lock is cryptographic**. The plaintext is not in the file, and
-  nobody gets the code without producing the right count. Someone could of
-  course write a script to count the digits for them; the point is that it
-  takes more resolve than tapping "reveal".
+  nobody gets the code without producing the right count for every block, in
+  order. Someone could of course write a script to count digits for them; the
+  point is that doing so takes more resolve than tapping "reveal", and the
+  answer space is small enough that the tedium — not the mathematics — is what
+  is really holding the door.
 * The **date lock is a promise the interface keeps**, not a cage. A time lock
   cannot be enforced by cryptography on a machine you control. Anyone who knows
   the vault password and is willing to poke at the stored JSON can read a
@@ -144,8 +153,16 @@ yourself or keep it in cloud storage.
 | --- | --- |
 | `index.html` | markup for every screen |
 | `styles.css` | the whole look; light and dark |
-| `app.js` | crypto, vault, storage mirroring, puzzles, dictation, UI |
+| `app.js` | crypto, vault, storage mirroring, puzzle chains, dictation, UI |
 | `restore.html` | the standalone offline unlocker template |
 
 No dependencies. Needs `crypto.subtle`, which browsers only expose on
 `https://`, `localhost`, or `file://`.
+
+A puzzle costs linear space: a 20-minute run adds about 15 KB to the vault, 90
+minutes about 84 KB, and the 240-minute maximum about 268 KB — comfortably
+inside a browser's 5 MB.
+
+Prior art: [password-locker.com](https://password-locker.com), which does the
+same two tricks — entering a passcode you cannot remember, and buying it back
+with a timed counting puzzle.
