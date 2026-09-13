@@ -72,13 +72,25 @@ have turned staying-unlocked off.
 digits it never shows you. An invented code leaves the vault exactly once: one
 digit at a time, into your phone, through the walkthrough below.
 
-**A date.** Presets for the common cases, a number-and-unit box for anything
-else — minutes, hours, days, weeks, months — and an exact date-and-time picker
-underneath, down to the minute. The entry stays shut until the moment you
-picked. It can be pushed
-further out at any time; it can never be pulled in. Winding the device clock
-back does not help — the vault records the furthest point in time it has ever
-seen and counts down from the later of the two.
+**A date, on a clock you cannot wind.** Presets for the common cases, a
+number-and-unit box for anything else — minutes, hours, days, weeks, months —
+and an exact date-and-time picker underneath, down to the minute. The entry
+stays shut until the moment you picked, and can be pushed further out at any
+time but never pulled in.
+
+The device clock does not decide when that moment arrives. It is the one thing
+its owner can change in ten seconds, so opening an entry needs a time seen from
+a server — the sync endpoint if you deployed one, otherwise the `Date` header
+the site itself serves — advanced within the session by a monotonic timer no
+setting can touch. Wind the clock forward and the entry reads **Unconfirmed**
+and stays shut, saying why and offering to check again. Wind it back and
+nothing happens either: the vault also remembers the furthest point it has
+ever seen.
+
+Two honest exceptions. Opened from a folder over `file://`, or from the offline
+backup with nothing reachable, there is nobody to ask — both fall back to the
+device clock and say on screen that they have. A copy on your own disk was
+never going to enforce a date anyway; the hosted site is the one that can.
 
 **A counting puzzle, priced in minutes.** You do not pick a difficulty, you
 pick how long getting the code back should cost you — five minutes, twenty,
@@ -140,10 +152,14 @@ back.
   point is that doing so takes more resolve than tapping "reveal", and the
   answer space is small enough that the tedium — not the mathematics — is what
   is really holding the door.
-* The **date lock is a promise the interface keeps**, not a cage. A time lock
-  cannot be enforced by cryptography on a machine you control. Anyone who knows
-  the vault password and is willing to poke at the stored JSON can read a
-  date‑only entry early. Combine it with a puzzle if you want teeth.
+* The **date lock holds against the clock, but not against a script.** The time
+  is checked with a server, so changing the date on your phone gains nothing.
+  What it cannot survive is someone with the vault password decrypting the
+  stored blob directly: a date‑only entry keeps its code in the payload, in the
+  clear once decrypted. A puzzle entry does not — the code is not in the file at
+  all, only the chain of counting blocks and the answers that unlock them. Use
+  both if you want the backup to hold against you as well as against your
+  clock.
 * Nothing here defends against malware on the machine, or someone who knows
   your vault password.
 
