@@ -148,7 +148,7 @@ function loadVault() {
 
 let saveFailed = false;
 
-function writeVault(vault) {
+async function writeVault(vault) {
   try {
     localStorage.setItem(STORE, JSON.stringify(vault));
     saveFailed = false;
@@ -156,8 +156,13 @@ function writeVault(vault) {
     saveFailed = true;                    // out of room, or storage blocked
     toast('This browser refused to save. Download a backup now.');
   }
-  idbPut(vault);
+  await idbPut(vault);                     // both stores settled before we return
 }
+
+/* When a copy last actually changed. Falls back to savedAt for vaults sealed
+   before contentAt existed. This — never the per-device rev — decides which of
+   two copies is newer. */
+const contentTime = v => (v && (v.contentAt || v.savedAt)) || 0;
 
 const revOf = v => (v && v.rev) || 0;
 
@@ -256,7 +261,7 @@ async function adoptRemote(remote) {
   }
 
   payload.serverStamp = remote.stamp || null;
-  writeVault(remote);
+  await writeVault(remote);
   state.vault = remote; state.payload = payload;
   if (!$('#panel-guide').hidden) return;
   (state.entryId && !$('#panel-entry').hidden) ? renderEntry(state.entryId) : renderList();
@@ -387,7 +392,7 @@ async function persistNow(changed) {
   state.vault.rev = revOf(state.vault) + 1;
   state.vault.savedAt = Date.now();
   state.vault.data = await seal(state.key, JSON.stringify(state.payload));
-  writeVault(state.vault);
+  await writeVault(state.vault);
   lastPersist = Date.now();
   if (changed) queuePush();
 }
@@ -1279,7 +1284,7 @@ async function loadSeed() {
   if (!confirm(`Replace this browser's vault with the copy deployed with the site (saved ${
     seed.savedAt ? stamp(seed.savedAt) : 'unknown'})? Anything here that is not in it is lost.${warning}`)) return;
 
-  writeVault(seed);
+  await writeVault(seed);
   lock();
   toast('Loaded the site copy. Open it with the password it was saved under.');
 }
@@ -1298,13 +1303,13 @@ async function readRestore(ev) {
     return;
   }
   const here = loadVault() || await idbGet();
-  if (here) {
-    const older = revOf(data) < revOf(here);
-    const when = here.savedAt ? ` (last saved ${stamp(here.savedAt)})` : '';
+  if (here && here.stamp !== data.stamp) {
+    const older = contentTime(data) < contentTime(here);
+    const when = here.savedAt ? ` (last changed ${stamp(contentTime(here))})` : '';
     if (!confirm(`Replace the vault in this browser${when} with the backup${
-      older ? ' — which is OLDER than what is here' : ''}? Anything saved since the backup is lost.`)) return;
+      older ? ' — which is OLDER than what is here' : ''}? Anything changed since the backup is lost.`)) return;
   }
-  writeVault(data);
+  await writeVault(data);
   await idbKey('del');
   pendingNew = null;
   await boot();
@@ -1427,7 +1432,7 @@ async function createVault(password) {
     kdf: { salt: b64(salt), iterations: KDF_IT, hash: 'SHA-256' },
     data: await seal(key, JSON.stringify(payload))
   };
-  writeVault(vault);
+  await writeVault(vault);
   await openSession(key, vault, payload, true, sync.url ? await syncCreds(password) : null);
 }
 
@@ -1551,17 +1556,28 @@ async function boot() {
   await loadConfig();
   let local = loadVault();
   const mirror = await idbGet();
-  if (mirror && revOf(mirror) > revOf(local)) {
+  /* Two stores of the same vault normally agree. When they do not — one was
+     cleared, or a restore is mid-flight — the later content wins, not the
+     higher rev (rev is a per-device tally and says nothing across copies). */
+  if (mirror && !local) {
     localStorage.setItem(STORE, JSON.stringify(mirror));
     local = mirror;
     toast('Recovered your vault from this browser’s second copy.');
-  } else if (local && revOf(local) > revOf(mirror)) {
+  } else if (local && !mirror) {
     idbPut(local);
+  } else if (mirror && local && mirror.stamp !== local.stamp) {
+    if (contentTime(mirror) > contentTime(local)) {
+      localStorage.setItem(STORE, JSON.stringify(mirror));
+      local = mirror;
+      toast('Recovered a newer copy from this browser’s second store.');
+    } else {
+      idbPut(local);
+    }
   }
 
   seed = await fetchSeed();
   if (seed && !local) {                       // nothing here: pure recovery
-    writeVault(seed);
+    await writeVault(seed);
     local = seed;
     toast('Loaded the vault deployed with the site.');
   }
