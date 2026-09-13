@@ -273,3 +273,5 @@ textarea { resize: vertical; }
   border: 1px solid var(--rule); border-radius: 2px; padding: 7px 8px; margin: 0 4px;
 }
 .inline-field select:focus { outline: 2px solid var(--ink); outline-offset: -1px; }
+
+.wheel { font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.1em; color: var(--ink); }

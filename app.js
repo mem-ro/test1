@@ -590,6 +590,69 @@ function draftDictation(code) {
   return steps;
 }
 
+/* ── a padlock's wheels ────────────────────────────────────── */
+/* Wheels are not a keypad. There is no delete and nothing is submitted, so the
+   decoys work the other way round: a wheel is set, and set again, and only its
+   last setting counts. Each wheel is visited two or three times in a scrambled
+   order, so what you did to any one of them is no guide to where it ended up. */
+
+const WHEEL_NAMES = {
+  2: ['left', 'right'],
+  3: ['left', 'middle', 'right'],
+  4: ['first', 'second', 'third', 'fourth'],
+  5: ['first', 'second', 'third', 'fourth', 'fifth']
+};
+
+const wheelName = (i, n) => (WHEEL_NAMES[n] || [])[i] || `wheel ${i + 1}`;
+
+function draftPadlock(code) {
+  const digits = [...code], n = digits.length;
+  const wrongFor = right => {
+    let c;
+    do { c = String(Math.floor(Math.random() * 10)); } while (c === right);
+    return c;
+  };
+
+  /* Each wheel gets a couple of wrong settings before its right one. */
+  const queues = digits.map(d => {
+    const visits = [];
+    const decoys = 1 + Math.floor(Math.random() * 2);
+    for (let i = 0; i < decoys; i++) visits.push({ ch: wrongFor(d), real: false });
+    visits.push({ ch: d, real: true });
+    return visits;
+  });
+
+  const steps = [];
+  while (queues.some(q => q.length)) {
+    const live = queues.map((q, i) => q.length ? i : -1).filter(i => i >= 0);
+    /* Hold a wheel's last visit back while other wheels still have work, so the
+       right settings do not all land in a row at the end. */
+    const unfinished = live.filter(i => queues[i].length > 1);
+    const pool = unfinished.length && Math.random() < 0.75 ? unfinished : live;
+    const w = pool[Math.floor(Math.random() * pool.length)];
+    steps.push({ act: 'wheel', wheel: w, ch: queues[w].shift().ch });
+  }
+  return steps;
+}
+
+function replayWheels(steps, n) {
+  const dial = new Array(n).fill(null);
+  for (const s of steps) dial[s.wheel] = s.ch;
+  return dial.join('');
+}
+
+function padlockDictation(code) {
+  const n = [...code].length;
+  for (let i = 0; i < 25; i++) {
+    const steps = draftPadlock(code);
+    const settled = replayWheels(steps, n) === code;
+    const lastReal = steps.length - 1;
+    const spread = steps.length >= n * 2 + 1;       // every wheel touched twice over
+    if (settled && spread && lastReal >= n) return steps;
+  }
+  return [...code].map((ch, wheel) => ({ act: 'wheel', wheel, ch }));
+}
+
 function dictation(code) {
   if ([...code].length < 2) return [...code].map(ch => ({ act: 'type', ch }));
   for (let i = 0; i < 25; i++) {
@@ -833,12 +896,15 @@ function renderEntry(id) {
 
 /* ── the walkthrough ───────────────────────────────────────── */
 
-const guide = { code: null, entryId: null, pass: 1, passes: 2, steps: [], i: 0, stage: 'intro', fresh: false };
+const guide = { code: null, entryId: null, kind: 'keypad', pass: 1, passes: 2, steps: [], i: 0, stage: 'intro', fresh: false };
 
-function startGuide(code, entryId, fresh) {
+const stepsFor = () => guide.kind === 'padlock' ? padlockDictation(guide.code) : dictation(guide.code);
+
+function startGuide(code, entryId, fresh, kind) {
   guide.code = code; guide.entryId = entryId; guide.fresh = !!fresh;
+  guide.kind = kind === 'padlock' ? 'padlock' : 'keypad';
   guide.pass = 1; guide.passes = 2; guide.i = 0; guide.stage = 'intro';
-  guide.steps = dictation(code);
+  guide.steps = stepsFor();
   renderGuide();
 }
 
@@ -850,34 +916,52 @@ function renderGuide() {
   const passLine = `Pass ${guide.pass} of ${guide.passes}`;
 
   if (guide.stage === 'intro') {
-    $('#guide-title').textContent = guide.fresh ? 'Set it on the device' : 'Type it into a device';
+    const padlock = guide.kind === 'padlock';
+    $('#guide-title').textContent = padlock
+      ? (guide.fresh ? 'Set it on the lock' : 'Dial it on the lock')
+      : (guide.fresh ? 'Set it on the device' : 'Type it into a device');
     body.innerHTML = `
       <p class="lede">${guide.fresh
-        ? 'The code is saved and locked. Now put it on the phone without learning it.'
-        : 'You will type the code into the phone without seeing it whole.'}</p>
+        ? `The combination is saved and locked away. Now put it on the ${padlock ? 'lock' : 'phone'} without learning it.`
+        : `You will ${padlock ? 'dial the combination' : 'type the code'} without seeing it whole.`}</p>
       <ol class="steps">
+        ${padlock ? `
+        <li>Open the padlock on its current combination and hold the reset lever, or press and hold the reset button, so the wheels are free to change.</li>
+        <li>Keepsafe names one wheel and one digit at a time. Set that wheel, press Next, forget it.</li>
+        <li>Every wheel is set more than once, and only its last setting counts. Look at the wheel you are turning, not at the row.</li>
+        <li>Afterwards it walks you through opening the lock once, to prove the combination took — then you spin the wheels and close it.</li>`
+        : `
         <li>On the phone: <span class="tt">Settings → Screen Time → Lock Screen Time Settings</span> (or <span class="tt">Change Screen Time Passcode</span>), and stop at the keypad.</li>
         <li>Keepsafe gives you one digit at a time. Type it, press Next, forget it.</li>
         <li>Some digits are wrong on purpose — you will be told to delete. Deletes take away right digits too, so do not try to reason about which was which.</li>
-        <li>iPhone asks for the passcode twice. The second pass looks nothing like the first.</li>
+        <li>iPhone asks for the passcode twice. The second pass looks nothing like the first.</li>`}
       </ol>
-      <div class="row"><button class="btn btn-solid" type="button" data-go>I am at the keypad</button>
+      <div class="row"><button class="btn btn-solid" type="button" data-go>${padlock
+        ? 'The lever is held down' : 'I am at the keypad'}</button>
         <button class="btn btn-quiet" type="button" data-stop>Not now</button></div>`;
     return;
   }
 
   if (guide.stage === 'between') {
-    $('#guide-title').textContent = 'Once more';
-    body.innerHTML = `<p class="lede">The phone should be asking for it again to confirm. Get to that keypad — the digits will come in a different order this time.</p>
+    const padlock = guide.kind === 'padlock';
+    $('#guide-title').textContent = padlock ? 'Now prove it took' : 'Once more';
+    body.innerHTML = `<p class="lede">${padlock
+      ? 'Let the lever go, close the shackle, and spin the wheels without reading them. Now dial it again and open the lock — if it opens, the combination is really set. The wheels come in a different order this time.'
+      : 'The phone should be asking for it again to confirm. Get to that keypad — the digits will come in a different order this time.'}</p>
       <div class="row"><button class="btn btn-solid" type="button" data-go>Ready</button>
         <button class="btn btn-quiet" type="button" data-stop>Stop</button></div>`;
     return;
   }
 
   if (guide.stage === 'done') {
+    const padlock = guide.kind === 'padlock';
     $('#guide-title').textContent = 'Done';
-    body.innerHTML = `<p class="lede">That is the code set. It is locked away here and you never saw it whole.</p>
-      <p class="hint">If the phone rejected it, run it again — and remember iOS starts adding delays after a few wrong tries.</p>
+    body.innerHTML = `<p class="lede">${padlock
+      ? 'If it opened, the combination is set and kept here. Spin every wheel now, without reading them, and close the lock.'
+      : 'That is the code set. It is locked away here and you never saw it whole.'}</p>
+      <p class="hint">${padlock
+        ? 'If it did not open, the combination never took — the lock is still on its old one. Run it again with the lever held down properly.'
+        : 'If the phone rejected it, run it again — and remember iOS starts adding delays after a few wrong tries.'}</p>
       <div class="row">
         <button class="btn btn-solid" type="button" data-finish>Finished</button>
         <button class="btn" type="button" data-again>Run it again</button>
@@ -887,12 +971,17 @@ function renderGuide() {
 
   const step = guide.steps[guide.i];
   const last = guide.i === guide.steps.length - 1;
-  $('#guide-title').textContent = passLine;
+  const wheels = [...guide.code].length;
+  $('#guide-title').textContent = guide.kind === 'padlock'
+    ? `${passLine} · ${guide.pass === 1 ? 'setting it' : 'opening it'}`
+    : passLine;
   body.innerHTML = `
     <p class="dial${step.act === 'del' ? ' del' : ''}">${step.act === 'del' ? '⌫ delete' : esc(step.ch)}</p>
     <p class="dial-label">${step.act === 'del'
       ? 'Take the last digit back off'
-      : 'Type this on the phone'}</p>
+      : step.act === 'wheel'
+        ? `Turn the <span class="wheel">${esc(wheelName(step.wheel, wheels))}</span> wheel to this`
+        : 'Type this on the phone'}</p>
     <div class="row">
       <button class="btn btn-solid" type="button" data-next>${last ? 'Done with this pass' : 'Next'}</button>
       <span class="hint" style="margin:0">or press <span class="tt">space</span></span>
@@ -903,7 +992,9 @@ function renderGuide() {
         <button class="btn" type="button" data-restart>Start this pass over</button>
         <button class="btn btn-quiet" type="button" data-stop>Stop</button>
       </div>
-      <p class="hint">Starting over means clearing every digit on the phone first.</p></div>`;
+      <p class="hint">${guide.kind === 'padlock'
+        ? 'Starting over is safe: the wheels are set again from scratch, so long as the lever is still held.'
+        : 'Starting over means clearing every digit on the phone first.'}</p></div>`;
 }
 
 async function guideNext() {
@@ -912,7 +1003,7 @@ async function guideNext() {
   if (guide.i < guide.steps.length) return renderGuide();
   if (guide.pass < guide.passes) {
     guide.pass++; guide.i = 0;
-    guide.steps = dictation(guide.code);      // a fresh scramble for the confirmation
+    guide.steps = stepsFor();                 // a fresh scramble for the second pass
     guide.stage = 'between';
     return renderGuide();
   }
@@ -932,17 +1023,21 @@ $('#guide-body').addEventListener('click', ev => {
   const t = ev.target;
   if (t.closest('[data-go]'))      { guide.stage = 'step'; guide.i = 0; renderGuide(); }
   if (t.closest('[data-next]'))    guideNext();
-  if (t.closest('[data-restart]')) { guide.steps = dictation(guide.code); guide.i = 0; renderGuide(); }
-  if (t.closest('[data-again]'))   startGuide(guide.code, guide.entryId, false);
+  if (t.closest('[data-restart]')) { guide.steps = stepsFor(); guide.i = 0; renderGuide(); }
+  if (t.closest('[data-again]'))   startGuide(guide.code, guide.entryId, false, guide.kind);
   if (t.closest('[data-finish]'))  guideStop();
   if (t.closest('[data-stop]'))    {
-    if (guide.stage === 'step' && !confirm('Stop halfway? The phone may be left with a half-typed passcode.')) return;
+    if (guide.stage === 'step' && !confirm(guide.kind === 'padlock'
+      ? 'Stop halfway? The lock may be left on a combination nobody knows — including Keepsafe.'
+      : 'Stop halfway? The phone may be left with a half-typed passcode.')) return;
     guideStop();
   }
 });
 
 $('#guide-quit').addEventListener('click', () => {
-  if (guide.stage === 'step' && !confirm('Stop halfway? The phone may be left with a half-typed passcode.')) return;
+  if (guide.stage === 'step' && !confirm(guide.kind === 'padlock'
+    ? 'Stop halfway? The lock may be left on a combination nobody knows — including Keepsafe.'
+    : 'Stop halfway? The phone may be left with a half-typed passcode.')) return;
   guideStop();
 });
 
@@ -1037,7 +1132,7 @@ async function newEntry(ev) {
   const entry = {
     id: b64(rand(9)).replace(/[^a-zA-Z0-9]/g, '').slice(0, 10) + Date.now().toString(36),
     label, createdAt: now(), unlockAt, opened: false, openedAt: null,
-    secret: null, puzzle: null, madeUp: mode !== 'mine', dictated: null
+    secret: null, puzzle: null, madeUp: mode !== 'mine', dictated: null, kind: deviceMode()
   };
 
   savingEntry = true;
@@ -1064,10 +1159,10 @@ async function newEntry(ev) {
   }
 
   $('#form-new').reset();
-  setCodeMode('mine');
+  setDevice('keypad');
   $('#puzzle-body').hidden = true;
   $('#time-body').hidden = false;
-  startGuide(secret, entry.id, true);
+  startGuide(secret, entry.id, true, entry.kind);
   toast('Locked away.');
 }
 
@@ -1408,6 +1503,21 @@ async function submitGate(ev) {
 
 /* ── wiring ────────────────────────────────────────────────── */
 
+function deviceMode() { return $('#device-mode .is-on').dataset.device; }
+
+function setDevice(kind) {
+  $$('#device-mode .chip').forEach(c => c.classList.toggle('is-on', c.dataset.device === kind));
+  $('#device-hint').textContent = kind === 'padlock'
+    ? 'Wheels you turn, with no delete key and nothing to submit — a combination padlock on a box, a case, a cupboard.'
+    : 'Digits typed into a keypad, with a delete key — a screen time passcode, a phone, an app.';
+  $$('#code-mode .chip[data-keypad]').forEach(c => {
+    c.dataset.mode = kind === 'padlock' ? c.dataset.padlock : c.dataset.keypad;
+    c.textContent = `Invent ${c.dataset.mode} digits`;
+  });
+  $('#new-secret').placeholder = kind === 'padlock' ? '482' : '4172';
+  setCodeMode('mine');
+}
+
 function setCodeMode(mode) {
   $$('#code-mode .chip').forEach(c => c.classList.toggle('is-on', c.dataset.mode === mode));
   const mine = mode === 'mine';
@@ -1489,6 +1599,11 @@ $('#code-mode').addEventListener('click', ev => {
   if (chip) setCodeMode(chip.dataset.mode);
 });
 
+$('#device-mode').addEventListener('click', ev => {
+  const chip = ev.target.closest('.chip');
+  if (chip) setDevice(chip.dataset.device);
+});
+
 function setUntil(minutes) {
   $('#new-until').value = localInput(now() + minutes * 60000);
 }
@@ -1557,7 +1672,7 @@ $('#entry-body').addEventListener('click', async ev => {
     catch { toast('Copying is blocked here — read it off the screen.'); }
   }
 
-  if (t.closest('[data-guide]')) startGuide(codeFor(e), e.id, false);
+  if (t.closest('[data-guide]')) startGuide(codeFor(e), e.id, false, e.kind);
 
   if (t.closest('[data-recheck-time]')) {
     toast('Asking for the time…');
@@ -1606,6 +1721,6 @@ document.addEventListener('visibilitychange', () => {
   if (state.key && sync.url && sync.id && unpushed()) { clearTimeout(pushTimer); syncPush(); }
 });
 
-setCodeMode('mine');
+setDevice('keypad');
 boot();
 })();

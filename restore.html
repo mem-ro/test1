@@ -29,6 +29,7 @@ input:focus{outline:2px solid var(--ink);outline-offset:-1px}
 .err{color:var(--accent);font-size:14px;margin:14px 0 0}
 .hint{font-size:13px;color:var(--muted);margin:8px 0 0;max-width:60ch}
 .tt{font-family:var(--mono);font-size:.94em}
+.wheel{font-family:var(--mono);text-transform:uppercase;letter-spacing:.1em;color:var(--ink)}
 ul{list-style:none;margin:34px 0 0;padding:0;border-top:1px solid var(--rule)}
 li{border-bottom:1px solid var(--rule);padding:16px 0;display:flex;gap:16px;justify-content:space-between;align-items:baseline}
 ol{margin:22px 0 26px;padding-left:20px;font-size:15px;color:var(--muted)}
@@ -173,11 +174,55 @@ function dictation(code){
   return code.split('').map(function(ch){return {act:'type',ch:ch};});
 }
 
-var guide = {code:null,back:null,pass:1,passes:2,steps:[],i:0,stage:'intro'};
+/* Padlock wheels: no delete, nothing submitted — a wheel is simply set again,
+   and only its last setting counts. */
+var WHEEL_NAMES = {2:['left','right'],3:['left','middle','right'],
+                   4:['first','second','third','fourth'],
+                   5:['first','second','third','fourth','fifth']};
+function wheelName(i,n){ return (WHEEL_NAMES[n]||[])[i] || ('wheel ' + (i+1)); }
 
-function startGuide(code, back){
+function draftPadlock(code){
+  var digits = code.split(''), n = digits.length;
+  var wrongFor = function(right){ var c; do { c = String(Math.floor(Math.random()*10)); } while (c === right); return c; };
+  var queues = digits.map(function(d){
+    var visits = [], decoys = 1 + Math.floor(Math.random()*2);
+    for (var i=0;i<decoys;i++) visits.push({ch:wrongFor(d)});
+    visits.push({ch:d});
+    return visits;
+  });
+  var steps = [];
+  while (queues.some(function(q){return q.length;})) {
+    var live = [], unfinished = [];
+    queues.forEach(function(q,i){ if (q.length) { live.push(i); if (q.length > 1) unfinished.push(i); } });
+    var pool = (unfinished.length && Math.random() < 0.75) ? unfinished : live;
+    var w = pool[Math.floor(Math.random()*pool.length)];
+    steps.push({act:'wheel', wheel:w, ch:queues[w].shift().ch});
+  }
+  return steps;
+}
+
+function replayWheels(steps,n){
+  var dial = new Array(n).fill(null);
+  steps.forEach(function(s){ dial[s.wheel] = s.ch; });
+  return dial.join('');
+}
+
+function padlockDictation(code){
+  var n = code.length;
+  for (var i=0;i<25;i++){
+    var steps = draftPadlock(code);
+    if (replayWheels(steps,n) === code && steps.length >= n*2+1) return steps;
+  }
+  return code.split('').map(function(ch,wheel){ return {act:'wheel', wheel:wheel, ch:ch}; });
+}
+
+var guide = {code:null,back:null,kind:'keypad',pass:1,passes:2,steps:[],i:0,stage:'intro'};
+function stepsFor(){ return guide.kind === 'padlock' ? padlockDictation(guide.code) : dictation(guide.code); }
+
+function startGuide(code, back, kind){
   guide.code=code; guide.back=back; guide.pass=1; guide.i=0; guide.stage='intro';
-  guide.steps=dictation(code);
+  guide.kind = kind === 'padlock' ? 'padlock' : 'keypad';
+  guide.steps=stepsFor();
   renderGuide();
 }
 
@@ -185,25 +230,40 @@ function renderGuide(){
   $('#list').hidden = true;
   var el = $('#detail'); el.hidden = false;
   var html;
+  var padlock = guide.kind === 'padlock';
   if (guide.stage==='intro') {
-    html='<h2>Type it into a device</h2><section><ol>'+
-      '<li>On the phone: <span class="tt">Settings → Screen Time</span>, and stop at the keypad.</li>'+
-      '<li>One digit at a time. Type it, press Next, forget it.</li>'+
-      '<li>Some digits are wrong on purpose and you will be told to delete — deletes take away right digits too.</li>'+
-      '<li>iPhone asks twice; the second pass looks nothing like the first.</li></ol>'+
-      '<div class="row"><button class="btn solid" id="go">I am at the keypad</button>'+
+    html='<h2>' + (padlock ? 'Dial it on the lock' : 'Type it into a device') + '</h2><section><ol>'+
+      (padlock
+        ? '<li>Open the padlock on its current combination and hold the reset lever so the wheels are free.</li>'+
+          '<li>One wheel and one digit at a time. Set it, press Next, forget it.</li>'+
+          '<li>Every wheel is set more than once, and only its last setting counts.</li>'+
+          '<li>Then it walks you through opening the lock once, to prove the combination took.</li>'
+        : '<li>On the phone: <span class="tt">Settings → Screen Time</span>, and stop at the keypad.</li>'+
+          '<li>One digit at a time. Type it, press Next, forget it.</li>'+
+          '<li>Some digits are wrong on purpose and you will be told to delete — deletes take away right digits too.</li>'+
+          '<li>iPhone asks twice; the second pass looks nothing like the first.</li>')+
+      '</ol><div class="row"><button class="btn solid" id="go">' +
+      (padlock ? 'The lever is held down' : 'I am at the keypad') + '</button>'+
       '<button class="back" id="stop">Not now</button></div></section>';
   } else if (guide.stage==='between') {
-    html='<h2>Once more</h2><section><p class="hint">The phone should be asking for it again to confirm. Get to that keypad — the digits come in a different order this time.</p>'+
-      '<div class="row"><button class="btn solid" id="go">Ready</button><button class="back" id="stop">Stop</button></div></section>';
+    html='<h2>' + (padlock ? 'Now prove it took' : 'Once more') + '</h2><section><p class="hint">'+
+      (padlock
+        ? 'Let the lever go, close the shackle and spin the wheels without reading them. Now dial it again and open the lock.'
+        : 'The phone should be asking for it again to confirm. Get to that keypad — the digits come in a different order this time.')+
+      '</p><div class="row"><button class="btn solid" id="go">Ready</button><button class="back" id="stop">Stop</button></div></section>';
   } else if (guide.stage==='done') {
-    html='<h2>Done</h2><section><p class="hint">That is the code typed in, without you ever seeing it whole. If the phone rejected it, run it again.</p>'+
-      '<div class="row"><button class="btn solid" id="stop">Finished</button><button class="btn" id="again">Run it again</button></div></section>';
+    html='<h2>Done</h2><section><p class="hint">'+
+      (padlock
+        ? 'If it opened, the combination is set. Spin every wheel now, without reading them, and close the lock. If it did not open, the lock is still on its old combination — run it again.'
+        : 'That is the code typed in, without you ever seeing it whole. If the phone rejected it, run it again.')+
+      '</p><div class="row"><button class="btn solid" id="stop">Finished</button><button class="btn" id="again">Run it again</button></div></section>';
   } else {
     var st=guide.steps[guide.i], last=guide.i===guide.steps.length-1;
     html='<h2>Pass '+guide.pass+' of '+guide.passes+'</h2><section>'+
       '<p class="dial'+(st.act==='del'?' del':'')+'">'+(st.act==='del'?'⌫ delete':esc(st.ch))+'</p>'+
-      '<p class="dial-label">'+(st.act==='del'?'Take the last digit back off':'Type this on the phone')+'</p>'+
+      '<p class="dial-label">'+(st.act==='del' ? 'Take the last digit back off'
+        : st.act==='wheel' ? 'Turn the <span class="wheel">' + esc(wheelName(st.wheel, guide.code.length)) + '</span> wheel to this'
+        : 'Type this on the phone')+'</p>'+
       '<div class="row"><button class="btn solid" id="next">'+(last?'Done with this pass':'Next')+'</button>'+
       '<span class="hint" style="margin:0">or press <span class="tt">space</span></span></div>'+
       '<div class="track"><span style="width:'+Math.round((guide.i+1)/guide.steps.length*100)+'%"></span></div>'+
@@ -215,8 +275,8 @@ function renderGuide(){
   var on=function(id,fn){var b=$('#'+id); if(b) b.addEventListener('click',fn);};
   on('go',function(){guide.stage='step';guide.i=0;renderGuide();});
   on('next',guideNext);
-  on('restart',function(){guide.steps=dictation(guide.code);guide.i=0;renderGuide();});
-  on('again',function(){startGuide(guide.code,guide.back);});
+  on('restart',function(){guide.steps=stepsFor();guide.i=0;renderGuide();});
+  on('again',function(){startGuide(guide.code,guide.back,guide.kind);});
   on('stop',function(){guide.code=null;guide.back();});
 }
 
@@ -224,7 +284,7 @@ function guideNext(){
   if(guide.stage!=='step')return;
   guide.i++;
   if(guide.i<guide.steps.length) return renderGuide();
-  if(guide.pass<guide.passes){guide.pass++;guide.i=0;guide.steps=dictation(guide.code);guide.stage='between';return renderGuide();}
+  if(guide.pass<guide.passes){guide.pass++;guide.i=0;guide.steps=stepsFor();guide.stage='between';return renderGuide();}
   guide.stage='done'; renderGuide();
 }
 
@@ -339,7 +399,7 @@ function renderEntry(i) {
 
   var d = $('#dictate');
   if (d) d.addEventListener('click', function () {
-    startGuide(code, function () { renderEntry(i); });
+    startGuide(code, function () { renderEntry(i); }, e.kind);
   });
 
   /* The wait is the lock, so it is kept here too — on server time when this

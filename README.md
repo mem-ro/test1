@@ -132,6 +132,11 @@ waits behind it.
 
 ## Typing it in without learning it
 
+Two devices, two protocols. The form asks which before anything else, because
+a keypad and a padlock forget in different ways.
+
+### A phone keypad
+
 The walkthrough runs straight after you save — the one moment the code is in
 hand and not yet locked — and afterwards from the **Dictate it to me** button
 on any entry that is *open*. Never on a locked one: reading you the digits one
@@ -157,6 +162,27 @@ test suite fails the build if it ever does.
 
 If you fat‑finger it, **Start this pass over** builds a new sequence — clear
 every digit on the phone first.
+
+### A combination padlock
+
+Wheels are not a keypad. There is no delete key, nothing is submitted, and the
+digits sit there in a row where you can read them — so the keypad trick does
+not carry over. What works instead is that a wheel can be set again:
+
+* **Each wheel is set two or three times**, and only its last setting counts.
+* **The wheels come in a scrambled order**, one at a time, so you are never
+  reading a combination — you are turning a wheel to a digit.
+* **Setting a wheel again undoes nothing visibly**, so which visit was the last
+  one is not something you can follow while you are doing it.
+
+The walkthrough opens by telling you to hold the reset lever, and closes by
+telling you to spin every wheel before you look up. In between there is a
+second pass that is not a confirmation but a **test**: you close the lock, dial
+it again and open it. A padlock that quietly failed to take a new combination
+is a box you cannot open, so proving it works is worth the minute.
+
+Three or four digits, whichever your lock has. As with the keypad, Keepsafe can
+invent the combination and never show it to you.
 
 The offline HTML backup can run the walkthrough too, so a phone can still be
 set up when this site is gone.

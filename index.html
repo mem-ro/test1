@@ -80,11 +80,20 @@
       </div>
 
       <div class="field">
+        <label>Where the code goes</label>
+        <div class="presets" id="device-mode">
+          <button class="chip is-on" type="button" data-device="keypad">A phone keypad</button>
+          <button class="chip" type="button" data-device="padlock">A combination padlock</button>
+        </div>
+        <p class="hint" id="device-hint">Digits typed into a keypad, with a delete key — a screen time passcode, a phone, an app.</p>
+      </div>
+
+      <div class="field">
         <label for="new-secret">The code</label>
         <div class="presets" id="code-mode">
           <button class="chip is-on" type="button" data-mode="mine">I have one</button>
-          <button class="chip" type="button" data-mode="4">Invent 4 digits</button>
-          <button class="chip" type="button" data-mode="6">Invent 6 digits</button>
+          <button class="chip" type="button" data-mode="4" data-keypad="4" data-padlock="3">Invent 4 digits</button>
+          <button class="chip" type="button" data-mode="6" data-keypad="6" data-padlock="4">Invent 6 digits</button>
         </div>
         <textarea id="new-secret" rows="2" placeholder="4172" spellcheck="false"></textarea>
         <p class="hint" id="secret-hint">Write it down here once. After you save, it is gone from the screen.</p>
