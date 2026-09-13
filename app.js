@@ -549,85 +549,6 @@ function dictation(code) {
   return [...code].map(ch => ({ act: 'type', ch }));       // plain, but correct
 }
 
-/* ── drawing a block ───────────────────────────────────────── */
-/* The block is painted, not written. There is no text in the page to select,
-   copy, or read out of the DOM, and every glyph is nudged, turned and set in a
-   different face so that a screenshot is worth less to a machine than it is to
-   the eye. It is friction, not proof — see MIN_BLOCK_MS below for the part
-   that does not care how you counted. */
-
-const FACES = ['ui-monospace, monospace', 'Georgia, serif', 'Menlo, monospace',
-               'Helvetica, Arial, sans-serif', 'Courier New, monospace'];
-
-/* Seeded so a block looks the same every time it is drawn. */
-function seeded(text) {
-  let h = 2166136261;
-  for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return () => {
-    h ^= h << 13; h ^= h >>> 17; h ^= h << 5;
-    return ((h >>> 0) % 100000) / 100000;
-  };
-}
-
-function drawBlock(canvas, text) {
-  const lines = text.split('\n');
-  const cols = Math.max(...lines.map(l => l.length));
-  const cell = 17, row = 25, pad = 16;
-  const w = cols * cell + pad * 2, h = lines.length * row + pad * 2;
-  const dpr = Math.min(window.devicePixelRatio || 1, 3);
-
-  canvas.width = Math.round(w * dpr);
-  canvas.height = Math.round(h * dpr);
-  canvas.style.maxWidth = w + 'px';
-
-  const css = getComputedStyle(document.documentElement);
-  const ink = css.getPropertyValue('--ink').trim() || '#141413';
-  const paper = css.getPropertyValue('--field').trim() || '#fffefb';
-  const rule = css.getPropertyValue('--rule').trim() || '#d9d5cb';
-
-  const g = canvas.getContext('2d');
-  g.scale(dpr, dpr);
-  g.fillStyle = paper;
-  g.fillRect(0, 0, w, h);
-
-  const rnd = seeded(text);
-
-  /* a little grit, under the glyphs */
-  g.fillStyle = rule;
-  for (let i = 0; i < cols * lines.length * 0.6; i++) {
-    g.globalAlpha = 0.25 + rnd() * 0.4;
-    g.fillRect(rnd() * w, rnd() * h, 1 + rnd(), 1 + rnd());
-  }
-
-  /* and a few strokes across it, so the background is not flat */
-  g.strokeStyle = rule;
-  g.lineWidth = 1;
-  for (let i = 0; i < 5; i++) {
-    g.globalAlpha = 0.3 + rnd() * 0.3;
-    g.beginPath();
-    g.moveTo(0, rnd() * h);
-    g.bezierCurveTo(w * 0.3, rnd() * h, w * 0.6, rnd() * h, w, rnd() * h);
-    g.stroke();
-  }
-
-  g.textAlign = 'center';
-  g.textBaseline = 'middle';
-  g.fillStyle = ink;
-
-  lines.forEach((line, y) => {
-    [...line].forEach((ch, x) => {
-      g.save();
-      g.translate(pad + x * cell + cell / 2 + (rnd() - 0.5) * 3,
-                  pad + y * row + row / 2 + (rnd() - 0.5) * 4);
-      g.rotate((rnd() - 0.5) * 0.26);
-      g.font = `${13 + Math.round(rnd() * 3)}px ${FACES[Math.floor(rnd() * FACES.length)]}`;
-      g.globalAlpha = 0.72 + rnd() * 0.28;
-      g.fillText(ch, 0, 0);
-      g.restore();
-    });
-  });
-}
-
 /* ── time ──────────────────────────────────────────────────── */
 
 function countdown(ms) {
@@ -748,7 +669,7 @@ function renderList() {
     return `<li><button class="entry" type="button" data-id="${esc(e.id)}">
       <span>
         <span class="entry-name">${esc(e.label)}</span>
-        <span class="entry-meta" data-clock="${e.unlockAt && !e.opened && !unconfirmed(e) ? e.unlockAt : ''}">${esc(bits.join('  ·  '))}</span>
+        <span class="entry-meta" data-clock="${e.unlockAt && !e.opened && !ripe(e) ? e.unlockAt : ''}">${esc(bits.join('  ·  '))}</span>
       </span>
       <span class="entry-state ${st.open ? 'open' : ''}">${st.label}</span>
     </button></li>`;
@@ -813,7 +734,7 @@ function renderEntry(id) {
       </div>
       <div class="track"><span style="width:${Math.round(done / p.rounds * 100)}%"></span></div>
       <p class="lede" style="margin-top:26px">Count the numbers in the block. A run of digits — <span class="tt">4</span>, <span class="tt">17</span>, <span class="tt">903</span> — counts as one number.</p>
-      <canvas class="grid" id="block" aria-label="a block of letters with numbers scattered through it"></canvas>
+      <pre class="grid">${esc(p.body)}</pre>
       <form class="answer" id="form-answer">
         <input type="number" id="answer" inputmode="numeric" min="0" required placeholder="how many"${shut ? ' disabled' : ''}>
         <button class="btn btn-solid" type="submit"${shut ? ' disabled' : ''}>${done + 1 < p.rounds ? 'Next block' : 'Unlock'}</button>
@@ -857,9 +778,6 @@ function renderEntry(id) {
   const typed = $('#answer') ? $('#answer').value : null;
   $('#entry-body').innerHTML = parts.join('');
   if (typed && $('#answer')) $('#answer').value = typed;   // twenty minutes of counting, kept
-
-  const canvas = $('#block');
-  if (canvas && e.puzzle && e.puzzle.body) drawBlock(canvas, e.puzzle.body);
 }
 
 /* ── the walkthrough ───────────────────────────────────────── */
@@ -1255,12 +1173,18 @@ function nudgeIdle() {
 
 function tick() {
   if (!state.payload || guideActive()) return;
-  const t = now();
+  /* Countdowns run on the clock that decides, not the one on the device. */
+  const t = provenNow() === null ? now() : provenNow();
   for (const el of $$('[data-clock]')) {
     const at = Number(el.dataset.clock);
     if (!at) continue;
     if (at <= t) {
-      if (state.view === 'view-app') (state.entryId && !$('#panel-entry').hidden) ? renderEntry(state.entryId) : renderList();
+      /* A moment has arrived, so the screen showing it needs redrawing — but
+         only that screen. Redrawing the list while someone is halfway through
+         the new-entry form would throw them out of it, once a second. */
+      if (state.view !== 'view-app') return;
+      if (!$('#panel-entry').hidden && state.entryId) renderEntry(state.entryId);
+      else if (!$('#panel-list').hidden) renderList();
       return;
     }
     const text = countdown(at - t);

@@ -104,13 +104,7 @@ This is not a rule the interface enforces, it is arithmetic: each answer is run
 through PBKDF2 and used as the key its link was encrypted with, so a wrong
 count decrypts nothing and the run cannot be skipped or reordered.
 
-**Each block is painted, not written.** It is drawn to a canvas, glyph by
-glyph, every one nudged, turned a degree or two and set in a different face
-over a faint grain. There is no text in the page to select, copy, or lift out
-of the DOM, and a screenshot is worth rather less to a machine than it is to
-the eye.
-
-**And a block cannot be answered before its minutes have passed.** Roughly a
+**A block cannot be answered before its minutes have passed.** Roughly a
 minute per block, on server time where there is any, counted down in front of
 you. This is the part that does not care how the counting got done — by eye, by
 script, or by handing a screenshot to a model. Whatever answers it, the run
@@ -172,13 +166,11 @@ back.
   all, only the chain of counting blocks and the answers that unlock them. Use
   both if you want the backup to hold against you as well as against your
   clock.
-* **A machine can probably still count for you.** The painted block, the mixed
-  faces and the grain raise the cost of pointing a vision model at a screenshot;
-  they do not make it impossible, and anything you can see, something else can
-  be shown. That is why the lock is not really the counting. It is the minute
-  per block that has to pass either way, which is why the puzzle is priced in
-  minutes rather than difficulty. Solve it instantly and you have saved
-  yourself nothing.
+* **A machine can count for you, and nothing here stops that.** Anything you
+  can see, something else can be shown. So the lock is not the counting: it is
+  the minute per block that has to pass either way, which is why the puzzle is
+  priced in minutes rather than difficulty. Solve it instantly and you have
+  saved yourself nothing.
 * Nothing here defends against malware on the machine, or someone who knows
   your vault password.
 
