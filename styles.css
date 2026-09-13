@@ -159,10 +159,11 @@ textarea { resize: vertical; }
   color: var(--muted); margin-bottom: 12px;
 }
 
-.grid {
-  font: 14px/1.85 var(--mono); background: var(--field); border: 1px solid var(--rule);
-  padding: 16px; margin: 0 0 16px; white-space: pre; overflow-x: auto;
-  letter-spacing: 0.22em; user-select: none;
+/* A painted block: nothing to select, nothing to copy out of the page. */
+canvas.grid {
+  display: block; width: 100%; height: auto; margin: 0 0 16px;
+  border: 1px solid var(--rule); background: var(--field);
+  user-select: none; -webkit-user-select: none; pointer-events: none;
 }
 
 .answer { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }

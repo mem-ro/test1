@@ -36,7 +36,7 @@ ol li{display:list-item;border:0;padding:0;margin-bottom:10px}
 .name{font-size:17px}
 .meta{display:block;font:12px/1.4 var(--mono);color:var(--muted);margin-top:5px}
 .state{font:12px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;color:var(--muted)}
-pre{font:14px/1.85 var(--mono);background:var(--field);border:1px solid var(--rule);padding:16px;white-space:pre;overflow-x:auto;letter-spacing:.22em;user-select:none;margin:0 0 16px}
+canvas.block{display:block;width:100%;height:auto;margin:0 0 16px;border:1px solid var(--rule);background:var(--field);user-select:none;-webkit-user-select:none;pointer-events:none}
 .code{font-family:var(--mono);font-size:clamp(24px,7vw,34px);word-break:break-all;background:var(--field);border:1px solid var(--ink);padding:20px;margin:0}
 .gauge{font-family:var(--mono);font-size:clamp(28px,8vw,40px);margin:0;font-variant-numeric:tabular-nums}
 .dial{font-family:var(--mono);font-size:clamp(96px,30vw,180px);line-height:1;margin:30px 0 0;letter-spacing:-.04em;font-variant-numeric:tabular-nums}
@@ -79,7 +79,8 @@ var $ = function (s) { return document.querySelector(s); };
 var te = new TextEncoder(), td = new TextDecoder();
 var bundle = EMBEDDED && EMBEDDED.vault ? EMBEDDED : { vault: EMBEDDED, sync: null };
 var vault = bundle.vault, payload = null, seen = 0, solved = {}, runs = {};
-var proven = 0, provenMono = 0, timeSource = null;
+var proven = 0, provenMono = 0, timeSource = null, starts = {}, floorWatch = null;
+var MIN_BLOCK_MS = 58500;      // the same floor the site keeps
 
 function unb64(str){var b=atob(str),o=new Uint8Array(b.length);for(var i=0;i<b.length;i++)o[i]=b.charCodeAt(i);return o;}
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
@@ -120,6 +121,55 @@ function deriveKey(secret, salt, it) {
 function openBlob(key, blob) {
   return crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(blob.iv)}, key, unb64(blob.ct))
     .then(function (pt) { return td.decode(pt); });
+}
+
+/* The block is painted here too: nothing to select, nothing to copy. */
+var FACES = ['ui-monospace, monospace','Georgia, serif','Menlo, monospace','Helvetica, Arial, sans-serif','Courier New, monospace'];
+function seeded(text){
+  var h = 2166136261;
+  for (var i=0;i<text.length;i++){ h ^= text.charCodeAt(i); h = Math.imul(h,16777619); }
+  return function(){ h ^= h<<13; h ^= h>>>17; h ^= h<<5; return ((h>>>0)%100000)/100000; };
+}
+function drawBlock(canvas, text){
+  var lines = text.split('\n');
+  var cols = Math.max.apply(null, lines.map(function(l){return l.length;}));
+  var cell = 17, row = 25, pad = 16;
+  var w = cols*cell + pad*2, h = lines.length*row + pad*2;
+  var dpr = Math.min(window.devicePixelRatio || 1, 3);
+  canvas.width = Math.round(w*dpr); canvas.height = Math.round(h*dpr);
+  canvas.style.maxWidth = w + 'px';
+  var css = getComputedStyle(document.documentElement);
+  var ink = css.getPropertyValue('--ink').trim() || '#141413';
+  var paper = css.getPropertyValue('--field').trim() || '#fffefb';
+  var rule = css.getPropertyValue('--rule').trim() || '#d9d5cb';
+  var g = canvas.getContext('2d');
+  g.scale(dpr,dpr);
+  g.fillStyle = paper; g.fillRect(0,0,w,h);
+  var rnd = seeded(text);
+  g.fillStyle = rule;
+  for (var i=0;i<cols*lines.length*0.6;i++){
+    g.globalAlpha = 0.25 + rnd()*0.4;
+    g.fillRect(rnd()*w, rnd()*h, 1+rnd(), 1+rnd());
+  }
+  g.strokeStyle = rule; g.lineWidth = 1;
+  for (var j=0;j<5;j++){
+    g.globalAlpha = 0.3 + rnd()*0.3;
+    g.beginPath(); g.moveTo(0, rnd()*h);
+    g.bezierCurveTo(w*0.3, rnd()*h, w*0.6, rnd()*h, w, rnd()*h);
+    g.stroke();
+  }
+  g.textAlign='center'; g.textBaseline='middle'; g.fillStyle = ink;
+  lines.forEach(function(line,y){
+    line.split('').forEach(function(ch,x){
+      g.save();
+      g.translate(pad + x*cell + cell/2 + (rnd()-0.5)*3, pad + y*row + row/2 + (rnd()-0.5)*4);
+      g.rotate((rnd()-0.5)*0.26);
+      g.font = (13 + Math.round(rnd()*3)) + 'px ' + FACES[Math.floor(rnd()*FACES.length)];
+      g.globalAlpha = 0.72 + rnd()*0.28;
+      g.fillText(ch,0,0);
+      g.restore();
+    });
+  });
 }
 
 function countdown(ms){
@@ -259,6 +309,7 @@ $('#gate').addEventListener('submit', function (ev) {
 });
 
 function renderList() {
+  floorWatch = null;
   $('#detail').hidden = true;
   var el = $('#list'); el.hidden = false;
   var rows = (payload.entries || []).map(function (e, i) {
@@ -283,6 +334,7 @@ $('#list').addEventListener('click', function (ev) {
 });
 
 function renderEntry(i) {
+  floorWatch = null;
   var e = payload.entries[i];
   $('#list').hidden = true;
   var el = $('#detail'); el.hidden = false;
@@ -307,7 +359,7 @@ function renderEntry(i) {
     html += '<h3>Block ' + (r.done + 1) + ' of ' + r.rounds + '</h3>' +
       '<div class="track"><span style="width:' + Math.round(r.done / r.rounds * 100) + '%"></span></div>' +
       '<p class="hint" style="margin:14px 0 16px">A run of digits counts as one number. Each answer decrypts the next block; the last one decrypts the code.</p>' +
-      '<pre>' + esc(r.body) + '</pre>' +
+      '<canvas class="block" id="block"></canvas>' +
       '<form id="ans"><input id="n" type="number" min="0" inputmode="numeric" required placeholder="how many">' +
       '<div class="row"><button class="btn solid" type="submit">Next block</button></div></form>' +
       '<p class="hint" id="ans-note">Counting here does not save your place — this file is a snapshot.</p>';
@@ -329,6 +381,25 @@ function renderEntry(i) {
     startGuide(code, function () { renderEntry(i); });
   });
 
+  var cv = $('#block');
+  if (cv && runs[i]) drawBlock(cv, runs[i].body);
+
+  /* The wait is the lock, so it is kept here too — on server time when this
+     file can reach one, on the device's own when it cannot. */
+  if (runs[i]) {
+    var mark = i + ':' + runs[i].done;
+    var pn = proven ? provenNow() : now();     // a duration needs a ticking clock
+    if (!starts[mark]) starts[mark] = pn;
+    var held = starts[mark] + MIN_BLOCK_MS - pn;
+    if (held > 0) {
+      $('#n').disabled = true;
+      $('#ans').querySelector('button').disabled = true;
+      $('#ans-note').textContent = 'This block can be answered in ' + countdown(held) +
+        '. However the counting gets done, the minutes are the lock.';
+      floorWatch = { at: starts[mark] + MIN_BLOCK_MS, entry: i };
+    }
+  }
+
   var f = $('#ans');
   if (f) f.addEventListener('submit', function (ev) {
     ev.preventDefault();
@@ -349,9 +420,21 @@ function renderEntry(i) {
 
 function tickClocks() {
   var g = document.querySelector('[data-at]');
-  if (!g) return;
-  var left = Number(g.dataset.at) - now();
-  g.textContent = countdown(left);
+  if (g) g.textContent = countdown(Number(g.dataset.at) - now());
+
+  if (floorWatch) {                       /* count the block's wait down in place */
+    var pn = proven ? provenNow() : now();
+    var held = floorWatch.at - pn;
+    var note = $('#ans-note');
+    if (held > 0) {
+      if (note) note.textContent = 'This block can be answered in ' + countdown(held) +
+        '. However the counting gets done, the minutes are the lock.';
+    } else {
+      var i = floorWatch.entry;
+      floorWatch = null;
+      if (!$('#detail').hidden) renderEntry(i);
+    }
+  }
 }
 
 start();

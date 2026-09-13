@@ -290,6 +290,11 @@ function provenNow() {
 
 const timeVerified = () => provenNow() !== null;
 
+/* A block's floor is a duration, not a date: it needs a clock that ticks. Use
+   the server's when we have actually reached one this session, and the
+   device's otherwise — the same bargain the date lock strikes. */
+const floorNow = () => (clock.proven ? provenNow() : now());
+
 /* Opened from a folder rather than a site, there is nobody to ask, and a copy
    on your own disk was never going to enforce anything anyway. It falls back
    to the device clock there and says so. */
@@ -345,6 +350,10 @@ const backupStale = () => (state.payload.dataRev || 0) > (state.payload.backedUp
 const BLOCK = { lines: 16, cols: 34, numbers: 48 };
 const BLOCK_SECONDS = 90;          // roughly how long one block takes to count
 const CHAIN_IT = 120000;           // per link; the answer space is tiny either way
+/* However you arrive at the count — by eye, by script, by asking a machine —
+   a block cannot be answered before this much of its time has gone. It is what
+   makes the puzzle's price its minutes rather than its difficulty. */
+const MIN_BLOCK_MS = Math.round(BLOCK_SECONDS * 0.65) * 1000;
 
 const roundsFor = minutes => Math.max(1, Math.round(minutes * 60 / BLOCK_SECONDS));
 const minutesLeft = p => Math.round((p.rounds - (p.done || 0)) * BLOCK_SECONDS / 60);
@@ -487,6 +496,85 @@ function dictation(code) {
     if (replay(steps) === code && !overfills(steps, [...code].length)) return steps;
   }
   return [...code].map(ch => ({ act: 'type', ch }));       // plain, but correct
+}
+
+/* ── drawing a block ───────────────────────────────────────── */
+/* The block is painted, not written. There is no text in the page to select,
+   copy, or read out of the DOM, and every glyph is nudged, turned and set in a
+   different face so that a screenshot is worth less to a machine than it is to
+   the eye. It is friction, not proof — see MIN_BLOCK_MS below for the part
+   that does not care how you counted. */
+
+const FACES = ['ui-monospace, monospace', 'Georgia, serif', 'Menlo, monospace',
+               'Helvetica, Arial, sans-serif', 'Courier New, monospace'];
+
+/* Seeded so a block looks the same every time it is drawn. */
+function seeded(text) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return () => {
+    h ^= h << 13; h ^= h >>> 17; h ^= h << 5;
+    return ((h >>> 0) % 100000) / 100000;
+  };
+}
+
+function drawBlock(canvas, text) {
+  const lines = text.split('\n');
+  const cols = Math.max(...lines.map(l => l.length));
+  const cell = 17, row = 25, pad = 16;
+  const w = cols * cell + pad * 2, h = lines.length * row + pad * 2;
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  canvas.style.maxWidth = w + 'px';
+
+  const css = getComputedStyle(document.documentElement);
+  const ink = css.getPropertyValue('--ink').trim() || '#141413';
+  const paper = css.getPropertyValue('--field').trim() || '#fffefb';
+  const rule = css.getPropertyValue('--rule').trim() || '#d9d5cb';
+
+  const g = canvas.getContext('2d');
+  g.scale(dpr, dpr);
+  g.fillStyle = paper;
+  g.fillRect(0, 0, w, h);
+
+  const rnd = seeded(text);
+
+  /* a little grit, under the glyphs */
+  g.fillStyle = rule;
+  for (let i = 0; i < cols * lines.length * 0.6; i++) {
+    g.globalAlpha = 0.25 + rnd() * 0.4;
+    g.fillRect(rnd() * w, rnd() * h, 1 + rnd(), 1 + rnd());
+  }
+
+  /* and a few strokes across it, so the background is not flat */
+  g.strokeStyle = rule;
+  g.lineWidth = 1;
+  for (let i = 0; i < 5; i++) {
+    g.globalAlpha = 0.3 + rnd() * 0.3;
+    g.beginPath();
+    g.moveTo(0, rnd() * h);
+    g.bezierCurveTo(w * 0.3, rnd() * h, w * 0.6, rnd() * h, w, rnd() * h);
+    g.stroke();
+  }
+
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillStyle = ink;
+
+  lines.forEach((line, y) => {
+    [...line].forEach((ch, x) => {
+      g.save();
+      g.translate(pad + x * cell + cell / 2 + (rnd() - 0.5) * 3,
+                  pad + y * row + row / 2 + (rnd() - 0.5) * 4);
+      g.rotate((rnd() - 0.5) * 0.26);
+      g.font = `${13 + Math.round(rnd() * 3)}px ${FACES[Math.floor(rnd() * FACES.length)]}`;
+      g.globalAlpha = 0.72 + rnd() * 0.28;
+      g.fillText(ch, 0, 0);
+      g.restore();
+    });
+  });
 }
 
 /* ── time ──────────────────────────────────────────────────── */
@@ -650,21 +738,30 @@ function renderEntry(id) {
     const p = e.puzzle;
     const wait = (p.nextTryAt || 0) - now();
     const done = p.done || 0;
+
+    /* When this block was first put in front of you. Server time where there
+       is any, so the wait cannot be skipped by touching the clock. */
+    if (!p.blockStart) { p.blockStart = floorNow(); persist(false); }
+    const readyAt = p.blockStart + MIN_BLOCK_MS;
+    const held = readyAt - floorNow();
+    const shut = held > 0 || wait > 0;
     parts.push(`<div class="counter">
         <span class="counter-now">Block ${done + 1} of ${p.rounds}</span>
         <span class="counter-left">about ${minutesLeft(p)} min of counting left</span>
       </div>
       <div class="track"><span style="width:${Math.round(done / p.rounds * 100)}%"></span></div>
       <p class="lede" style="margin-top:26px">Count the numbers in the block. A run of digits — <span class="tt">4</span>, <span class="tt">17</span>, <span class="tt">903</span> — counts as one number.</p>
-      <pre class="grid">${esc(p.body)}</pre>
+      <canvas class="grid" id="block" aria-label="a block of letters with numbers scattered through it"></canvas>
       <form class="answer" id="form-answer">
-        <input type="number" id="answer" inputmode="numeric" min="0" required placeholder="how many"${wait > 0 ? ' disabled' : ''}>
-        <button class="btn btn-solid" type="submit"${wait > 0 ? ' disabled' : ''}>${done + 1 < p.rounds ? 'Next block' : 'Unlock'}</button>
+        <input type="number" id="answer" inputmode="numeric" min="0" required placeholder="how many"${shut ? ' disabled' : ''}>
+        <button class="btn btn-solid" type="submit"${shut ? ' disabled' : ''}>${done + 1 < p.rounds ? 'Next block' : 'Unlock'}</button>
       </form>
-      <p class="hint" id="answer-note" data-clock="${wait > 0 ? p.nextTryAt : ''}">${wait > 0
+      <p class="hint" id="answer-note" data-clock="${wait > 0 ? p.nextTryAt : held > 0 ? readyAt : ''}">${wait > 0
         ? `Wrong count. Try this block again in ${countdown(wait)}.`
-        : (p.attempts ? `${p.attempts} wrong ${p.attempts === 1 ? 'try' : 'tries'} on this block.`
-          : `Each answer decrypts the next block${p.rounds > 1 ? `, and the last one decrypts the code` : ''}. A wrong number opens nothing.`)}</p>`);
+        : held > 0
+          ? `This block can be answered in ${countdown(held)}. However you do the counting — by eye, or by asking something to do it for you — the minutes are the lock, and they are not skippable.`
+          : (p.attempts ? `${p.attempts} wrong ${p.attempts === 1 ? 'try' : 'tries'} on this block.`
+            : `Each answer decrypts the next block${p.rounds > 1 ? `, and the last one decrypts the code` : ''}. A wrong number opens nothing.`)}</p>`);
   } else {
     parts.push(`<div class="reveal">${esc(e.secret)}</div>
       <div class="row"><button class="btn" type="button" data-copy>Copy</button></div>`);
@@ -696,6 +793,9 @@ function renderEntry(id) {
   </div>`);
 
   $('#entry-body').innerHTML = parts.join('');
+
+  const canvas = $('#block');
+  if (canvas && e.puzzle && e.puzzle.body) drawBlock(canvas, e.puzzle.body);
 }
 
 /* ── the walkthrough ───────────────────────────────────────── */
@@ -828,6 +928,8 @@ async function tryAnswer(ev) {
   if (!e || guess === '') return;
   const p = e.puzzle;
 
+  if ((p.blockStart || 0) + MIN_BLOCK_MS > floorNow()) { renderEntry(e.id); return; }   // the wait is the lock
+
   note.textContent = 'Checking…';
   let link = null;
   try {
@@ -853,6 +955,7 @@ async function tryAnswer(ev) {
   if (link.code === undefined) {                    // on to the next block
     p.body = link.body; p.salt = link.salt;
     p.done = (p.done || 0) + 1;
+    p.blockStart = floorNow();
     p.attempts = 0; p.nextTryAt = 0;
     await persist(true);
     renderEntry(e.id);
