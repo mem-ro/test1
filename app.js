@@ -146,9 +146,16 @@ function loadVault() {
   catch { return null; }
 }
 
+let saveFailed = false;
+
 function writeVault(vault) {
-  try { localStorage.setItem(STORE, JSON.stringify(vault)); }
-  catch { toast('This browser refused to save. Download a backup now.'); }
+  try {
+    localStorage.setItem(STORE, JSON.stringify(vault));
+    saveFailed = false;
+  } catch {
+    saveFailed = true;                    // out of room, or storage blocked
+    toast('This browser refused to save. Download a backup now.');
+  }
   idbPut(vault);
 }
 
@@ -200,14 +207,27 @@ async function syncPull() {
   } catch { sync.note = 'unreachable'; return null; }
 }
 
-async function syncPush() {
+/* Work that has not reached the endpoint yet. Anything that would replace the
+   vault has to know about this, or a week of offline edits goes quietly. */
+const unpushed = () => (state.vault.stamp || '') !== (state.payload.serverStamp || '');
+
+async function syncPush(force) {
   if (!sync.url || !sync.id || !state.vault) return;
   try {
-    const { ok, status, data } = await syncCall('/push', { vault: state.vault });
-    if (ok) { sync.at = Date.now(); sync.note = 'saved'; return; }
+    const { ok, status, data } = await syncCall('/push', {
+      vault: state.vault, expect: state.payload.serverStamp || null, force: !!force
+    });
+    if (ok) {
+      sync.at = Date.now(); sync.note = 'saved';
+      if (state.payload.serverStamp !== state.vault.stamp) {
+        state.payload.serverStamp = state.vault.stamp;
+        persist(false);                      // housekeeping: the stamp is kept
+      }
+      return;
+    }
     if (status === 409) {                       // another device is ahead
       sync.note = 'another device has newer changes';
-      if (data.vault && revOf(data.vault) > revOf(state.vault)) adoptRemote(data.vault);
+      if (data.vault && revOf(data.vault) > revOf(state.vault)) offerRemote(data.vault);
       return;
     }
     sync.note = status === 403 ? 'the slot belongs to another password' : 'the endpoint refused the write';
@@ -224,17 +244,23 @@ function queuePush() {
    should still open it. If it does not, the password behind it differs and
    the only honest move is to ask for it. */
 async function adoptRemote(remote) {
-  writeVault(remote);
+  /* Prove it opens before writing it down. The other order would throw away a
+     vault that does open in favour of one that might not. */
+  let payload;
   try {
-    const payload = JSON.parse(await open_(state.key, remote.data));
-    state.vault = remote; state.payload = payload;
-    if (!$('#panel-guide').hidden) return;
-    (state.entryId && !$('#panel-entry').hidden) ? renderEntry(state.entryId) : renderList();
-    toast('Picked up newer changes from the site.');
+    payload = JSON.parse(await open_(state.key, remote.data));
   } catch {
-    toast('The saved vault was made with a different password.');
-    lock();
+    sync.note = 'the saved copy belongs to a different password';
+    toast('The copy saved elsewhere was made with a different password — keeping this one.');
+    return;
   }
+
+  payload.serverStamp = remote.stamp || null;
+  writeVault(remote);
+  state.vault = remote; state.payload = payload;
+  if (!$('#panel-guide').hidden) return;
+  (state.entryId && !$('#panel-entry').hidden) ? renderEntry(state.entryId) : renderList();
+  toast('Picked up newer changes from the site.');
 }
 
 /* ── time that cannot be wound on ──────────────────────────── */
@@ -268,7 +294,14 @@ async function checkTime() {
   }
 
   clock.checked = Date.now();
-  if (!ms) return false;
+  if (!ms || ms < Date.UTC(2025, 0, 1)) return false;      // nonsense, ignore it
+
+  /* proven only ever goes up, so one absurd answer would be permanent. A jump
+     of more than a month past what we already trust is not believed — and what
+     we trust includes the high-water mark carried in the vault, or a fresh
+     session would have nothing to measure against. */
+  const known = Math.max(clock.proven, (state.payload && state.payload.proven) || 0);
+  if (known && ms > known + 45 * 86400000) return false;
 
   clock.proven = Math.max(clock.proven, ms);
   clock.mono = performance.now();
@@ -328,9 +361,27 @@ const clockSuspect = () => !!state.payload && Date.now() < (state.payload.seen |
 /* `changed` marks a real edit. Housekeeping saves (clock keeping, unlocking
    the session) still bump the storage revision, but must not make a good
    backup look stale. */
-async function persist(changed) {
+/* Saves are queued one behind another. Sealing is asynchronous, and two of
+   these running at once would race: the slower one would write its older
+   ciphertext under the newer revision number, and whatever the other one had
+   just saved would be gone. */
+let saving = Promise.resolve();
+
+function persist(changed) {
+  saving = saving.then(() => persistNow(changed), () => persistNow(changed));
+  return saving;
+}
+
+async function persistNow(changed) {
+  if (!state.key || !state.payload) return;
   state.payload.seen = now();
-  if (changed) state.payload.dataRev = (state.payload.dataRev || 0) + 1;
+  if (changed) {
+    state.payload.dataRev = (state.payload.dataRev || 0) + 1;
+    /* A fresh identity for this content. Housekeeping saves keep the old one,
+       so "has anything actually changed since the endpoint last saw us" has a
+       straight answer. */
+    state.vault.stamp = b64(rand(9));
+  }
   state.vault.rev = revOf(state.vault) + 1;
   state.vault.savedAt = Date.now();
   state.vault.data = await seal(state.key, JSON.stringify(state.payload));
@@ -662,8 +713,19 @@ function renderList() {
 
   const ahead = seed && revOf(seed) > revOf(state.vault);
   const siteNag = $('#site-nag');
-  siteNag.hidden = !ahead;
-  if (ahead) {
+  siteNag.hidden = !(ahead || pendingRemote || saveFailed);
+
+  if (saveFailed) {
+    siteNag.innerHTML = `<span>This browser refused to save — it may be out of room, or
+      storage may be blocked here. What you do now may not survive a reload.</span>
+      <button class="btn" type="button" data-nag>Back it up</button>`;
+  } else if (pendingRemote) {
+    siteNag.innerHTML = `<span>Another device has saved changes since this one last managed to
+      (theirs ${esc(stamp(pendingRemote.savedAt || 0))}), and this device has changes of its own
+      that never got through. One of the two has to win.</span>
+      <button class="btn" type="button" data-load-remote>Take theirs</button>
+      <button class="btn" type="button" data-keep-mine>Keep mine</button>`;
+  } else if (ahead) {
     siteNag.innerHTML = `<span>The copy deployed with the site is newer than this browser's
       (saved ${esc(stamp(seed.savedAt || 0))}). Loading it replaces what is here.</span>
       <button class="btn" type="button" data-load-seed>Load it</button>`;
@@ -792,7 +854,9 @@ function renderEntry(id) {
       : `<p class="hint" style="margin-top:20px">A locked code cannot be deleted — that is the point of it. Open it first, then delete it if you still want to.</p>`}
   </div>`);
 
+  const typed = $('#answer') ? $('#answer').value : null;
   $('#entry-body').innerHTML = parts.join('');
+  if (typed && $('#answer')) $('#answer').value = typed;   // twenty minutes of counting, kept
 
   const canvas = $('#block');
   if (canvas && e.puzzle && e.puzzle.body) drawBlock(canvas, e.puzzle.body);
@@ -974,8 +1038,11 @@ async function tryAnswer(ev) {
 
 function codeMode() { return $('#code-mode .is-on').dataset.mode; }
 
+let savingEntry = false;
+
 async function newEntry(ev) {
   ev.preventDefault();
+  if (savingEntry) return;            // Enter, twice, while a puzzle is building
   const err = $('#new-error');
   err.hidden = true;
 
@@ -985,7 +1052,7 @@ async function newEntry(ev) {
   const useTime = $('#cond-time').checked;
   const usePuzzle = $('#cond-puzzle').checked;
 
-  const fail = m => { err.textContent = m; err.hidden = false; };
+  const fail = m => { err.textContent = m; err.hidden = false; savingEntry = false; };
   if (!label) return fail('Give it a name.');
   if (!secret) return fail('Type the code, or have Keepsafe invent one.');
   if (!useTime && !usePuzzle) return fail('Pick at least one condition, otherwise nothing is locked.');
@@ -1004,20 +1071,29 @@ async function newEntry(ev) {
     secret: null, puzzle: null, madeUp: mode !== 'mine', dictated: null
   };
 
-  if (usePuzzle) {
-    const minutes = Math.min(240, Math.max(1, Number($('#puzzle-minutes').value) || 20));
-    const btn = $('#form-new button[type=submit]');
-    btn.disabled = true;
-    entry.puzzle = await buildPuzzle(secret, minutes, (k, n) => {
-      btn.textContent = `Building block ${k} of ${n}…`;
-    });
+  savingEntry = true;
+  const btn = $('#form-new button[type=submit]');
+
+  try {
+    if (usePuzzle) {
+      const minutes = Math.min(240, Math.max(1, Number($('#puzzle-minutes').value) || 20));
+      btn.disabled = true;
+      entry.puzzle = await buildPuzzle(secret, minutes, (k, n) => {
+        btn.textContent = `Building block ${k} of ${n}…`;
+      });
+    } else {
+      entry.secret = secret;               // already behind the vault password
+    }
+    state.payload.entries.unshift(entry);
+    await persist(true);
+  } catch (err) {
+    fail('Something went wrong saving that. Nothing was locked away.');
+    return;
+  } finally {
+    savingEntry = false;                   // never leave the form wedged
     btn.disabled = false; btn.textContent = 'Lock it';
-  } else {
-    entry.secret = secret;                 // already behind the vault password
   }
 
-  state.payload.entries.unshift(entry);
-  await persist(true);
   $('#form-new').reset();
   setCodeMode('mine');
   $('#puzzle-body').hidden = true;
@@ -1113,13 +1189,20 @@ async function recheckSeed() {
   toast(seed ? 'The site is serving a vault file.' : 'No vault.json is being served yet.');
 }
 
-function loadSeed() {
+async function loadSeed() {
   if (!seed) return;
+
+  let opens = false;
+  try { await open_(state.key, seed.data); opens = true; } catch { /* another password */ }
+
+  const warning = opens ? '' :
+    '\n\nIt does not open with the password you are using now. Unless you know the one it was saved under, it cannot be opened at all.';
   if (!confirm(`Replace this browser's vault with the copy deployed with the site (saved ${
-    seed.savedAt ? stamp(seed.savedAt) : 'unknown'})? Anything here that is not in it is lost.`)) return;
+    seed.savedAt ? stamp(seed.savedAt) : 'unknown'})? Anything here that is not in it is lost.${warning}`)) return;
+
   writeVault(seed);
   lock();
-  toast('Loaded the site copy. Unlock it with the password it was saved under.');
+  toast('Loaded the site copy. Open it with the password it was saved under.');
 }
 
 function restore() { $('#restore-file').value = ''; $('#restore-file').click(); }
@@ -1165,8 +1248,9 @@ function lock() {
 function nudgeIdle() {
   if (!state.key || staying) return;
   clearTimeout(idleTimer);
+  const counting = !!$('#form-answer');      // twenty minutes of it, without a click
   idleTimer = setTimeout(() => { lock(); toast('Locked after five quiet minutes.'); },
-    guideActive() ? GUIDE_IDLE_MS : IDLE_MS);
+    (guideActive() || counting) ? GUIDE_IDLE_MS : IDLE_MS);
 }
 
 function tick() {
@@ -1205,14 +1289,39 @@ async function openSession(key, vault, payload, fresh, creds) {
   nudgeIdle();
   if (fresh) toast('Set. Lock a code away, then download a backup.');
   if (sync.url && sync.id) settleWithRemote();
-  checkTime().then(got => { if (got) { persist(false); renderList(); } });
+  checkTime().then(got => {
+    if (!got) return;
+    persist(false);
+    if (!$('#panel-list').hidden) renderList();     // never yank the screen away
+  });
 }
 
 /* On opening: take whatever is newer, here or there. */
+/* Four cases, and only one of them is a clash. */
 async function settleWithRemote() {
   const remote = await syncPull();
-  if (remote && revOf(remote) > revOf(state.vault)) return adoptRemote(remote);
-  if (!remote || revOf(state.vault) > revOf(remote)) return syncPush();
+  if (!remote) return syncPush();                       // nothing saved yet
+
+  if (remote.stamp && remote.stamp === state.vault.stamp) {
+    state.payload.serverStamp = remote.stamp;           // the same vault
+    return;
+  }
+  if (remote.stamp && remote.stamp === state.payload.serverStamp) {
+    return syncPush();                                  // only this device moved
+  }
+  if (unpushed()) {
+    /* Both moved. Taking either silently would throw the other away, so the
+       choice goes to the person whose codes they are. */
+    return offerRemote(remote);
+  }
+  return adoptRemote(remote);                           // only the other moved
+}
+
+let pendingRemote = null;
+
+function offerRemote(remote) {
+  pendingRemote = remote;
+  if (state.view === 'view-app' && !$('#panel-list').hidden) renderList();
 }
 
 async function enter(password) {
@@ -1227,9 +1336,9 @@ async function createVault(password) {
   try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch { /* fine */ }
   const salt = rand(16);
   const key = await deriveKey(password, salt, KDF_IT);
-  const payload = { entries: [], seen: Date.now(), dataRev: 0, backedUpRev: 0 };
+  const payload = { entries: [], seen: Date.now(), dataRev: 0, backedUpRev: 0, serverStamp: null };
   const vault = {
-    v: 1, rev: 1, savedAt: Date.now(),
+    v: 1, rev: 1, savedAt: Date.now(), stamp: b64(rand(9)),
     kdf: { salt: b64(salt), iterations: KDF_IT, hash: 'SHA-256' },
     data: await seal(key, JSON.stringify(payload))
   };
@@ -1443,6 +1552,20 @@ $('#panel-list').addEventListener('click', ev => {
   if (btn) return renderEntry(btn.dataset.id);
   if (ev.target.closest('[data-nag]')) renderBackup();
   if (ev.target.closest('[data-load-seed]')) loadSeed();
+
+  if (ev.target.closest('[data-load-remote]')) {
+    if (!pendingRemote) return;
+    if (!confirm('Take the other device\'s copy? What this one has saved since is lost.')) return;
+    const remote = pendingRemote; pendingRemote = null;
+    adoptRemote(remote);
+  }
+
+  if (ev.target.closest('[data-keep-mine]')) {
+    if (!confirm('Keep this device\'s copy? What the other device saved is lost.')) return;
+    pendingRemote = null;
+    syncPush(true).then(renderList);
+    toast('Sending this device\'s copy.');
+  }
 });
 
 $('#entry-body').addEventListener('submit', ev => {
@@ -1502,7 +1625,11 @@ $('#entry-body').addEventListener('click', async ev => {
 
 ['click', 'keydown', 'pointerdown'].forEach(ev =>
   document.addEventListener(ev, nudgeIdle, { passive: true }));
-document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) return tick();
+  /* Going away with a change still in the debounce: send it now. */
+  if (state.key && sync.url && sync.id && unpushed()) { clearTimeout(pushTimer); syncPush(); }
+});
 
 setCodeMode('mine');
 boot();

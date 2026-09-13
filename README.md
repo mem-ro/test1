@@ -196,6 +196,17 @@ A saved code should not be able to disappear. So:
 * **A locked entry cannot be deleted.** No button, no shortcut. Open it — wait
   the date out, or solve the puzzle — and then the delete appears, and it asks
   you to type DELETE. Deleting is for codes you can already see.
+* **Nothing replaces a vault until the replacement is known to open.** A copy
+  arriving from the endpoint is decrypted first and written second; one that
+  does not open under the password in use is refused and reported, rather than
+  swallowing the vault that does.
+* **Saves are queued, never overlapped.** Sealing is asynchronous, and two at
+  once would let the slower write its older contents under the newer revision.
+* **Two devices that both changed things are told, not merged.** Revisions are
+  per-device counters and cannot decide who is newer, so each save carries a
+  stamp and each push names the stamp it expects to replace. If the endpoint has
+  moved on, the push is refused and you are given the choice — take theirs, or
+  keep yours — instead of one of them vanishing.
 * **A restore that would replace a newer vault says so**, with the date of what
   it is about to overwrite, before it does anything.
 * **It nags** whenever there are changes you have not backed up. Housekeeping

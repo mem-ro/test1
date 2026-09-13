@@ -67,15 +67,22 @@ export default {
       const size = JSON.stringify(vault).length;
       if (size > 4_000_000) return json({ error: 'vault too large' }, 413);
 
-      const incoming = Number(vault.rev) || 0;
-      const held = stored ? Number(stored.vault.rev) || 0 : 0;
-      if (stored && incoming < held && !body.force) {
-        return json({ ok: false, reason: 'stale', vault: stored.vault, savedAt: stored.savedAt }, 409);
+      /* Revisions are per-device counters: two devices can reach the same number
+         holding different vaults, so they cannot decide who is newer. What can
+         is the stamp of the vault the client last saw here. If the slot has
+         moved on since, the client is told, and nothing is overwritten. */
+      if (stored && !body.force) {
+        const held = stored.vault.stamp;
+        const expect = body.expect;
+        const matches = held ? expect === held : (Number(vault.rev) || 0) >= (Number(stored.vault.rev) || 0);
+        if (!matches) {
+          return json({ ok: false, reason: 'stale', vault: stored.vault, savedAt: stored.savedAt }, 409);
+        }
       }
 
       const savedAt = Date.now();
       await env.VAULTS.put(slot, JSON.stringify({ tokenHash, vault, savedAt }));
-      return json({ ok: true, rev: incoming, savedAt, now: savedAt });
+      return json({ ok: true, rev: Number(vault.rev) || 0, stamp: vault.stamp || null, savedAt, now: savedAt });
     }
 
     return json({ error: 'not found' }, 404);
