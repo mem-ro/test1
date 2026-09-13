@@ -227,7 +227,7 @@ async function syncPush(force) {
     }
     if (status === 409) {                       // another device is ahead
       sync.note = 'another device has newer changes';
-      if (data.vault && revOf(data.vault) > revOf(state.vault)) offerRemote(data.vault);
+      if (data.vault && data.vault.stamp !== state.vault.stamp) offerRemote(data.vault);
       return;
     }
     sync.note = status === 403 ? 'the slot belongs to another password' : 'the endpoint refused the write';
@@ -377,10 +377,12 @@ async function persistNow(changed) {
   state.payload.seen = now();
   if (changed) {
     state.payload.dataRev = (state.payload.dataRev || 0) + 1;
-    /* A fresh identity for this content. Housekeeping saves keep the old one,
-       so "has anything actually changed since the endpoint last saw us" has a
-       straight answer. */
+    /* A fresh identity and timestamp for this content. Housekeeping saves keep
+       both, so "has anything actually changed, and which change is the later
+       one" both have straight answers that a bumped rev or a refreshed savedAt
+       cannot give. */
     state.vault.stamp = b64(rand(9));
+    state.vault.contentAt = Date.now();
   }
   state.vault.rev = revOf(state.vault) + 1;
   state.vault.savedAt = Date.now();
@@ -391,6 +393,20 @@ async function persistNow(changed) {
 }
 
 const backupStale = () => (state.payload.dataRev || 0) > (state.payload.backedUpRev || 0);
+
+/* Whether a passive copy (a deployed vault.json, a file moved from another
+   phone) is a genuinely newer version than the one loaded here. `rev` cannot
+   answer this — it is a per-device counter, so a phone that has saved more
+   often has a higher rev regardless of which holds the later edit. Two honest
+   signals do: a different content stamp means they actually differ, and the
+   later savedAt is the later edit. */
+function isNewerCopy(other) {
+  if (!other || !other.data) return false;
+  if (other.stamp && state.vault.stamp && other.stamp === state.vault.stamp) return false;
+  const mine = state.vault.contentAt || state.vault.savedAt || 0;   // savedAt: vaults from before contentAt
+  const theirs = other.contentAt || other.savedAt || 0;
+  return theirs > mine;
+}
 
 /* ── puzzle ────────────────────────────────────────────────── */
 /* Retrieval is priced in minutes, not difficulty: you pick how long getting
@@ -745,7 +761,7 @@ function renderList() {
       <button class="btn" type="button" data-nag>Back it up</button>`;
   }
 
-  const ahead = seed && revOf(seed) > revOf(state.vault);
+  const ahead = isNewerCopy(seed);
   const siteNag = $('#site-nag');
   siteNag.hidden = !(ahead || pendingRemote || saveFailed);
 
@@ -1214,18 +1230,17 @@ function renderBackup() {
   panel('backup');
   const status = $('#site-copy-status');
   const warn = $('#site-warning');
-  const here = revOf(state.vault);
 
   if (!seed) {
     status.textContent = 'Nothing is deployed with the site yet. Until there is, a cleared browser means reaching for a backup file.';
   } else {
     const when = seed.savedAt ? stamp(seed.savedAt) : 'an unknown date';
-    const gap = here - revOf(seed);
-    status.textContent = gap > 0
-      ? `Deployed copy saved ${when} — ${gap} change${gap === 1 ? '' : 's'} behind what is in this browser.`
-      : gap < 0
-        ? `Deployed copy saved ${when}, and it is newer than this browser's.`
-        : `Deployed copy saved ${when}. Up to date.`;
+    const same = seed.stamp && state.vault.stamp && seed.stamp === state.vault.stamp;
+    status.textContent = same
+      ? `Deployed copy saved ${when}. Up to date.`
+      : isNewerCopy(seed)
+        ? `Deployed copy saved ${when}, and it is newer than this browser's — load it below.`
+        : `Deployed copy saved ${when}, older than what is in this browser. Download and commit a fresh one.`;
   }
 
   const line = $('#sync-status');
@@ -1408,7 +1423,7 @@ async function createVault(password) {
   const key = await deriveKey(password, salt, KDF_IT);
   const payload = { entries: [], seen: Date.now(), dataRev: 0, backedUpRev: 0, serverStamp: null };
   const vault = {
-    v: 1, rev: 1, savedAt: Date.now(), stamp: b64(rand(9)),
+    v: 1, rev: 1, savedAt: Date.now(), contentAt: Date.now(), stamp: b64(rand(9)),
     kdf: { salt: b64(salt), iterations: KDF_IT, hash: 'SHA-256' },
     data: await seal(key, JSON.stringify(payload))
   };

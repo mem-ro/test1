@@ -240,6 +240,12 @@ A saved code should not be able to disappear. So:
   stamp and each push names the stamp it expects to replace. If the endpoint has
   moved on, the push is refused and you are given the choice — take theirs, or
   keep yours — instead of one of them vanishing.
+* **Which of two copies is newer is decided by when each was last edited**, not
+  by a revision count. A rev is a per-device counter, so a phone that has saved
+  more often carries a higher one no matter which copy holds the later change —
+  which meant a genuinely newer file (an extended lock deployed from another
+  phone) could be silently ignored. Every copy now stamps the wall-clock time
+  of its last real edit, and that is what the comparison uses.
 * **A restore that would replace a newer vault says so**, with the date of what
   it is about to overwrite, before it does anything.
 * **It nags** whenever there are changes you have not backed up. Housekeeping
