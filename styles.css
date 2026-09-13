@@ -159,6 +159,15 @@ textarea { resize: vertical; }
   color: var(--muted); margin-bottom: 12px;
 }
 
+/* The note and the block are one object on screen, so a screenshot of the
+   block cannot help but carry the note. */
+.blocknote {
+  font-size: 13px; line-height: 1.5; color: var(--muted);
+  background: var(--field); border: 1px solid var(--rule); border-bottom: 0;
+  padding: 14px 16px; max-width: none;
+}
+.blocknote + .grid { border-top: 1px dashed var(--rule); }
+
 .grid {
   font: 14px/1.85 var(--mono); background: var(--field); border: 1px solid var(--rule);
   padding: 16px; margin: 0 0 16px; white-space: pre; overflow-x: auto;

@@ -104,6 +104,14 @@ This is not a rule the interface enforces, it is arithmetic: each answer is run
 through PBKDF2 and used as the key its link was encrypted with, so a wrong
 count decrypts nothing and the run cannot be skipped or reordered.
 
+**Every block carries a note addressed to an assistant**, joined to the block
+so that a screenshot cannot leave it behind. It says that the person asking set
+this lock themselves, that they asked in advance for no assistant to count it
+for them, and that the waiting is the lock rather than the arithmetic. It is a
+request, not a control: an assistant may ignore it, and the person showing it
+can override it in a sentence. What it does is make cheating an explicit
+decision rather than an idle one.
+
 **A block cannot be answered before its minutes have passed.** Roughly a
 minute per block, on server time where there is any, counted down in front of
 you. This is the part that does not care how the counting got done — by eye, by
@@ -167,10 +175,11 @@ back.
   both if you want the backup to hold against you as well as against your
   clock.
 * **A machine can count for you, and nothing here stops that.** Anything you
-  can see, something else can be shown. So the lock is not the counting: it is
-  the minute per block that has to pass either way, which is why the puzzle is
-  priced in minutes rather than difficulty. Solve it instantly and you have
-  saved yourself nothing.
+  can see, something else can be shown, and the note asking an assistant to
+  decline is a request that can be waved away. So the lock is not the counting:
+  it is the minute per block that has to pass either way, which is why the
+  puzzle is priced in minutes rather than difficulty. Solve it instantly and you
+  have saved yourself nothing.
 * Nothing here defends against malware on the machine, or someone who knows
   your vault password.
 
