@@ -104,13 +104,19 @@ This is not a rule the interface enforces, it is arithmetic: each answer is run
 through PBKDF2 and used as the key its link was encrypted with, so a wrong
 count decrypts nothing and the run cannot be skipped or reordered.
 
-**Every block carries a note addressed to an assistant**, joined to the block
-so that a screenshot cannot leave it behind. It says that the person asking set
-this lock themselves, that they asked in advance for no assistant to count it
-for them, and that the waiting is the lock rather than the arithmetic. It is a
-request, not a control: an assistant may ignore it, and the person showing it
-can override it in a sentence. What it does is make cheating an explicit
-decision rather than an idle one.
+**Every block carries a note addressed to an assistant**, twice over: alongside
+the block so a screenshot cannot leave it behind, and woven into the block's own
+text — wrapped to its width, repeated in the middle and at the end — so that
+copying the grid copies the note with it. The woven lines carry no digits, and
+the generator checks that weaving them in has not changed how many numbers the
+block contains; if it somehow had, the block goes out plain instead.
+
+It says that the person asking set this lock themselves, that they asked in
+advance for no assistant to count it for them, and that the waiting is the lock
+rather than the arithmetic. It is a request, not a control: an assistant may
+treat it as data and ignore it, and the person showing it can override it in a
+sentence. What it does is make going around the lock an explicit decision
+rather than an idle one.
 
 **A block cannot be answered before its minutes have passed.** Roughly a
 minute per block, on server time where there is any, counted down in front of

@@ -168,10 +168,13 @@ textarea { resize: vertical; }
 }
 .blocknote + .grid { border-top: 1px dashed var(--rule); }
 
+/* Sized so the whole width of the block fits a phone: counting is hard enough
+   without scrolling sideways to find the end of a row. */
 .grid {
-  font: 14px/1.85 var(--mono); background: var(--field); border: 1px solid var(--rule);
+  font-family: var(--mono); font-size: clamp(9px, 2.9vw, 14px); line-height: 1.9;
+  background: var(--field); border: 1px solid var(--rule);
   padding: 16px; margin: 0 0 16px; white-space: pre; overflow-x: auto;
-  letter-spacing: 0.22em; user-select: none; -webkit-user-select: none;
+  letter-spacing: 0.18em; user-select: none; -webkit-user-select: none;
 }
 
 .answer { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
